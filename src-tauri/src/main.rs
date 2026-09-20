@@ -16,6 +16,65 @@ struct Config {
     default_output_dir: Option<String>,
     /// 点窗口 X 时：true=最小化到托盘，false=直接退出
     close_to_tray: bool,
+    /// 硬限制预设条件（教务老师可在设置里查看/修改）
+    hard_limits: HardLimits,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct HardLimits {
+    /// 时间安排
+    schedule: ScheduleRule,
+    /// 固定课程（day: 1=周一 ... 7=周日；period: 1-8）
+    fixed_classes: Vec<FixedClass>,
+    /// 班级设置
+    classes: ClassRule,
+    /// 连堂规则
+    consecutive: ConsecutiveRule,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ScheduleRule {
+    periods_per_day: i32,
+    period_minutes: i32,
+    morning_start: String,
+    morning_end: String,
+    afternoon_start: String,
+    afternoon_end: String,
+    /// 大课间（上午第3节后）
+    long_break_after_period: i32,
+    long_break_minutes: i32,
+    /// 眼保健操（下午第1节后，即第6节后）
+    eye_break_after_period: i32,
+    eye_break_minutes: i32,
+    /// 默认课间时长
+    default_break_minutes: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct FixedClass {
+    day: i32,
+    period: i32,
+    subject: String,
+    note: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ClassRule {
+    total_classes: i32,
+    arts_start: i32,
+    arts_end: i32,
+    science_start: i32,
+    science_end: i32,
+    gaokao_policy: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ConsecutiveRule {
+    subjects: Vec<String>,
+    math_day: i32,
+    chinese_day: i32,
+    english_day: i32,
+    rule: String,
 }
 
 impl Default for Config {
@@ -23,6 +82,56 @@ impl Default for Config {
         Self {
             default_output_dir: None,
             close_to_tray: true,
+            hard_limits: HardLimits {
+                schedule: ScheduleRule {
+                    periods_per_day: 8,
+                    period_minutes: 40,
+                    morning_start: "08:00".to_string(),
+                    morning_end: "12:20".to_string(),
+                    afternoon_start: "14:30".to_string(),
+                    afternoon_end: "16:55".to_string(),
+                    long_break_after_period: 3,
+                    long_break_minutes: 30,
+                    eye_break_after_period: 6,
+                    eye_break_minutes: 15,
+                    default_break_minutes: 10,
+                },
+                fixed_classes: vec![
+                    FixedClass {
+                        day: 1,
+                        period: 1,
+                        subject: "班会".to_string(),
+                        note: "由班主任上课".to_string(),
+                    },
+                    FixedClass {
+                        day: 1,
+                        period: 8,
+                        subject: "研究性学习".to_string(),
+                        note: "".to_string(),
+                    },
+                    FixedClass {
+                        day: 4,
+                        period: 8,
+                        subject: "校本课".to_string(),
+                        note: "".to_string(),
+                    },
+                ],
+                classes: ClassRule {
+                    total_classes: 25,
+                    arts_start: 1,
+                    arts_end: 4,
+                    science_start: 5,
+                    science_end: 25,
+                    gaokao_policy: "新高考3+1+2".to_string(),
+                },
+                consecutive: ConsecutiveRule {
+                    subjects: vec!["语文".to_string(), "数学".to_string(), "英语".to_string()],
+                    math_day: 2,
+                    chinese_day: 3,
+                    english_day: 4,
+                    rule: "老师一般带2个班，一个班上午1-2节，另一个班上午4-5节".to_string(),
+                },
+            },
         }
     }
 }
@@ -202,6 +311,13 @@ fn run_scheduler(
     // 写 requirements.txt
     fs::write(in_dir.join("requirements.txt"), requirements)
         .map_err(|e| format!("写入要求文件失败: {}", e))?;
+
+    // 写 hard_limits.json（硬限制预设条件，从配置里带过来）
+    let cfg = load_config();
+    let hl_json = serde_json::to_string_pretty(&cfg.hard_limits)
+        .map_err(|e| format!("序列化硬限制失败: {}", e))?;
+    fs::write(in_dir.join("hard_limits.json"), hl_json)
+        .map_err(|e| format!("写入硬限制文件失败: {}", e))?;
 
     // 启动引擎
     let (program, extra_args) = build_engine_command(&app)?;
