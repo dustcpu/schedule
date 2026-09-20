@@ -1,0 +1,32 @@
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+
+# 本地配置 / 敏感文件
+.env
+.env.local
+*.log
+
+# 输出（用户运行时产生）
+output/
+*.xlsx
+*.pdf
+!engine/*.xlsx
+!engine/*.pdf
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

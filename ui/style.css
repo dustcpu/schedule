@@ -1,0 +1,186 @@
+/* 排课助手 - 简洁浅色 Win11 风 */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --border: #e2e4e9;
+  --text: #1f2329;
+  --text-dim: #6b7280;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --success: #16a34a;
+  --warn: #d97706;
+  --error: #dc2626;
+  --radius: 10px;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+}
+
+body {
+  padding: 20px 28px;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+header h1 {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.step {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.path-text {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.primary-btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.primary-btn:hover { background: var(--primary-hover); }
+
+.ghost-btn {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ghost-btn:hover { background: #eef0f3; }
+
+.big-btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  padding: 14px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.big-btn:hover { background: var(--primary-hover); }
+.big-btn:disabled {
+  background: #93b4f5;
+  cursor: not-allowed;
+}
+
+textarea {
+  width: 100%;
+  min-height: 90px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  background: #fafbfc;
+}
+textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
+
+.status {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+.status.ready { color: var(--text-dim); }
+.status.running { color: var(--primary); }
+.status.success { color: var(--success); border-color: #bbf7d0; background: #f0fdf4; }
+.status.warn { color: var(--warn); border-color: #fde68a; background: #fffbeb; }
+.status.error { color: var(--error); border-color: #fecaca; background: #fef2f2; }
+
+.result.hidden { display: none; }
+.result ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.result li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.result .actions button {
+  margin-left: 8px;
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 14px;
+  cursor: pointer;
+}
+.radio input { cursor: pointer; }
+
+.about p { padding: 3px 0; color: var(--text-dim); }
+.about strong { color: var(--text); }
+
+.warnings {
+  margin-top: 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--warn);
+}
+.warnings li { margin: 2px 0; }

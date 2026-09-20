@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>排课助手</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>排课助手</h1>
+    <button id="btn-settings" class="ghost-btn">设置</button>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="step">① 输入数据（Excel）</div>
+      <div class="row">
+        <button id="btn-pick-file" class="primary-btn">选择文件</button>
+        <span id="file-name" class="path-text">未选择文件</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="step">② 特殊要求（可选）</div>
+      <textarea id="requirements" placeholder="请在此填写排课特殊要求，例如：&#10;· 周一上午不要排体育课&#10;· 教师张三下午有会，请勿排课&#10;· 周五下午留出社团活动时间"></textarea>
+    </section>
+
+    <section class="card">
+      <div class="step">③ 输出目录</div>
+      <div class="row">
+        <button id="btn-pick-dir" class="primary-btn">选择目录</button>
+        <span id="dir-name" class="path-text">未选择目录</span>
+      </div>
+    </section>
+
+    <button id="btn-run" class="big-btn">开始排课</button>
+
+    <div id="status" class="status ready">就绪</div>
+
+    <section id="result-area" class="result hidden">
+      <div class="step">结果文件</div>
+      <ul id="result-list"></ul>
+    </section>
+  </main>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    let inputPath = null;
+    let outputDir = null;
+
+    const $ = id => document.getElementById(id);
+
+    async function refreshConfig() {
+      const cfg = await invoke('get_config');
+      if (cfg.default_output_dir) {
+        outputDir = cfg.default_output_dir;
+        $('dir-name').textContent = outputDir;
+      }
+    }
+
+    $('btn-pick-file').onclick = async () => {
+      const p = await invoke('pick_input_file');
+      if (p) {
+        inputPath = p;
+        $('file-name').textContent = p;
+      }
+    };
+
+    $('btn-pick-dir').onclick = async () => {
+      const p = await invoke('pick_output_dir');
+      if (p) {
+        outputDir = p;
+        $('dir-name').textContent = outputDir;
+        await invoke('set_config', {
+          config: { default_output_dir: outputDir, close_to_tray: true }
+        });
+      }
+    };
+
+    $('btn-settings').onclick = async () => {
+      await invoke('open_settings');
+    };
+
+    function setStatus(cls, text, warnings) {
+      const el = $('status');
+      el.className = 'status ' + cls;
+      el.textContent = text;
+      if (warnings && warnings.length) {
+        const ul = document.createElement('ul');
+        ul.className = 'warnings';
+        warnings.forEach(w => {
+          const li = document.createElement('li');
+          li.textContent = w;
+          ul.appendChild(li);
+        });
+        el.appendChild(ul);
+      }
+    }
+
+    function renderResult(r) {
+      const area = $('result-area');
+      const list = $('result-list');
+      list.innerHTML = '';
+
+      // 方案列表
+      if (r.plans && r.plans.length) {
+        const header = document.createElement('div');
+        header.style.cssText = 'font-size:13px;color:#6b7280;margin-bottom:6px;';
+        header.textContent = '共生成 ' + r.plans.length + ' 套方案：';
+        list.appendChild(header);
+        r.plans.forEach(p => {
+          const li = document.createElement('li');
+          const left = document.createElement('span');
+          left.innerHTML = '<strong>方案' + p.index + '</strong>　' + p.name + '　<span style="color:#2563eb">评分 ' + p.score.toFixed(1) + '</span>　<span style="color:#6b7280">' + p.note + '</span>';
+          li.appendChild(left);
+          list.appendChild(li);
+        });
+        const sep = document.createElement('div');
+        sep.style.cssText = 'height:10px;';
+        list.appendChild(sep);
+      }
+
+      // 结果文件
+      if (r.output_xlsx) {
+        const li = document.createElement('li');
+        li.innerHTML = '<span>result.xlsx（总览 + 各方案 sheet）</span>';
+        const openBtn = document.createElement('button');
+        openBtn.className = 'ghost-btn';
+        openBtn.textContent = '打开';
+        openBtn.onclick = () => invoke('open_path', { path: r.output_xlsx });
+        li.appendChild(openBtn);
+        list.appendChild(li);
+      }
+      if (r.output_pdf) {
+        const li = document.createElement('li');
+        li.innerHTML = '<span>result.pdf（总览 + 各方案页）</span>';
+        const openBtn = document.createElement('button');
+        openBtn.className = 'ghost-btn';
+        openBtn.textContent = '打开';
+        openBtn.onclick = () => invoke('open_path', { path: r.output_pdf });
+        li.appendChild(openBtn);
+        list.appendChild(li);
+      }
+      // 打开所在文件夹
+      if (r.output_xlsx || r.output_pdf) {
+        const openDirBtn = document.createElement('button');
+        openDirBtn.className = 'ghost-btn';
+        openDirBtn.textContent = '打开所在文件夹';
+        openDirBtn.onclick = () => invoke('open_path', { path: outputDir });
+        const li = document.createElement('li');
+        li.style.justifyContent = 'flex-end';
+        li.appendChild(openDirBtn);
+        list.appendChild(li);
+      }
+      area.classList.remove('hidden');
+    }
+
+    $('btn-run').onclick = async () => {
+      if (!inputPath) {
+        setStatus('error', '请先选择输入 Excel 文件');
+        return;
+      }
+      if (!outputDir) {
+        setStatus('error', '请先选择输出目录');
+        return;
+      }
+      const btn = $('btn-run');
+      btn.disabled = true;
+      setStatus('running', '正在排课，请稍候…');
+      $('result-area').classList.add('hidden');
+
+      try {
+        const r = await invoke('run_scheduler', {
+          inputPath: inputPath,
+          requirements: $('requirements').value,
+          outputDir: outputDir
+        });
+        if (r.code === 0) {
+          setStatus('success', '排课完成：' + r.message);
+        } else if (r.code === 1) {
+          setStatus('warn', '排课完成（有警告）：' + r.message, r.warnings);
+        } else {
+          setStatus('error', '排课失败：' + r.message, r.warnings);
+        }
+        renderResult(r);
+      } catch (e) {
+        setStatus('error', '调用失败：' + e);
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    refreshConfig();
+  </script>
+</body>
+</html>
