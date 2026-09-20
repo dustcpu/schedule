@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>设置 - 排课助手</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>设置</h1>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="step">默认输出目录</div>
+      <div class="row">
+        <button id="btn-pick-dir" class="primary-btn">选择目录</button>
+        <span id="dir-name" class="path-text"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="step">点窗口右上角 X 时</div>
+      <label class="radio">
+        <input type="radio" name="close-behavior" value="tray" checked>
+        最小化到托盘（推荐，程序继续驻留后台）
+      </label>
+      <label class="radio">
+        <input type="radio" name="close-behavior" value="quit">
+        直接退出程序
+      </label>
+    </section>
+
+    <section class="card">
+      <div class="step">关于</div>
+      <div class="about">
+        <p><strong>排课助手</strong> v0.1.0</p>
+        <p>作者：Dust.</p>
+        <p>本程序完全离线运行，不上传任何数据。</p>
+      </div>
+    </section>
+
+    <button id="btn-back" class="big-btn">返回主面板</button>
+  </main>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const $ = id => document.getElementById(id);
+
+    let cfg = { default_output_dir: null, close_to_tray: true };
+
+    async function load() {
+      cfg = await invoke('get_config');
+      $('dir-name').textContent = cfg.default_output_dir || '未设置';
+      document.querySelector(
+        `input[name="close-behavior"][value="${cfg.close_to_tray ? 'tray' : 'quit'}"]`
+      ).checked = true;
+    }
+
+    async function save() {
+      cfg.close_to_tray = document.querySelector(
+        'input[name="close-behavior"]:checked'
+      ).value === 'tray';
+      await invoke('set_config', { config: cfg });
+    }
+
+    $('btn-pick-dir').onclick = async () => {
+      const p = await invoke('pick_output_dir');
+      if (p) {
+        cfg.default_output_dir = p;
+        $('dir-name').textContent = p;
+        await save();
+      }
+    };
+
+    document.querySelectorAll('input[name="close-behavior"]').forEach(r => {
+      r.onchange = save;
+    });
+
+    $('btn-back').onclick = async () => {
+      await invoke('show_main');
+      // 隐藏设置窗口自己
+      await window.__TAURI__.window.getCurrentWindow().hide();
+    };
+
+    load();
+  </script>
+</body>
+</html>
