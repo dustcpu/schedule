@@ -72,9 +72,11 @@
       if (p) {
         outputDir = p;
         $('dir-name').textContent = outputDir;
-        await invoke('set_config', {
-          config: { default_output_dir: outputDir, close_to_tray: true }
-        });
+        // 先取完整配置再改字段：Rust 侧 Config 含 hard_limits，
+        // 只传两个字段会反序列化失败，且会覆盖用户的其他设置
+        const cfg = await invoke('get_config');
+        cfg.default_output_dir = outputDir;
+        await invoke('set_config', { config: cfg });
       }
     };
 
