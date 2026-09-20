@@ -4,6 +4,20 @@
   <meta charset="UTF-8">
   <title>设置 - 排课助手</title>
   <link rel="stylesheet" href="style.css">
+  <style>
+    .hl-group { margin-bottom: 12px; }
+    .hl-group h3 { margin: 8px 0 6px; font-size: 14px; color: #2563eb; }
+    .hl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+    .hl-field { display: flex; flex-direction: column; gap: 2px; }
+    .hl-field label { font-size: 12px; color: #666; }
+    .hl-field input, .hl-field select {
+      padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px;
+    }
+    .fixed-row { display: grid; grid-template-columns: 1fr 1fr 1.2fr 1.5fr auto; gap: 6px; margin-bottom: 4px; align-items: center; }
+    .fixed-row input { padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+    .small-btn { padding: 4px 10px; font-size: 12px; background: #ef4444; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    .add-btn { padding: 5px 12px; font-size: 12px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; margin-top: 4px; }
+  </style>
 </head>
 <body>
   <header>
@@ -32,6 +46,73 @@
     </section>
 
     <section class="card">
+      <div class="step">硬限制预设条件（教务老师可查看/修改）</div>
+
+      <div class="hl-group">
+        <h3>时间安排</h3>
+        <div class="hl-grid">
+          <div class="hl-field"><label>每天节数</label><input type="number" id="hl-periods" min="1" max="12"></div>
+          <div class="hl-field"><label>每节时长（分钟）</label><input type="number" id="hl-period-min" min="20" max="90"></div>
+          <div class="hl-field"><label>上午开始</label><input type="time" id="hl-am-start"></div>
+          <div class="hl-field"><label>上午结束</label><input type="time" id="hl-am-end"></div>
+          <div class="hl-field"><label>下午开始</label><input type="time" id="hl-pm-start"></div>
+          <div class="hl-field"><label>下午结束</label><input type="time" id="hl-pm-end"></div>
+          <div class="hl-field"><label>大课间（第几节后）</label><input type="number" id="hl-long-after" min="1" max="8"></div>
+          <div class="hl-field"><label>大课间时长（分钟）</label><input type="number" id="hl-long-min" min="10" max="60"></div>
+          <div class="hl-field"><label>眼保健操（第几节后）</label><input type="number" id="hl-eye-after" min="1" max="8"></div>
+          <div class="hl-field"><label>眼保健操时长（分钟）</label><input type="number" id="hl-eye-min" min="5" max="30"></div>
+          <div class="hl-field"><label>默认课间（分钟）</label><input type="number" id="hl-break-min" min="5" max="30"></div>
+        </div>
+      </div>
+
+      <div class="hl-group">
+        <h3>固定课程</h3>
+        <div id="fixed-list"></div>
+        <button class="add-btn" id="btn-add-fixed">+ 添加固定课</button>
+      </div>
+
+      <div class="hl-group">
+        <h3>班级设置</h3>
+        <div class="hl-grid">
+          <div class="hl-field"><label>总班数</label><input type="number" id="hl-total" min="1" max="60"></div>
+          <div class="hl-field"><label>高考政策</label><input type="text" id="hl-policy"></div>
+          <div class="hl-field"><label>文科班起始</label><input type="number" id="hl-arts-start" min="1"></div>
+          <div class="hl-field"><label>文科班结束</label><input type="number" id="hl-arts-end" min="1"></div>
+          <div class="hl-field"><label>理科班起始</label><input type="number" id="hl-sci-start" min="1"></div>
+          <div class="hl-field"><label>理科班结束</label><input type="number" id="hl-sci-end" min="1"></div>
+        </div>
+      </div>
+
+      <div class="hl-group">
+        <h3>连堂规则</h3>
+        <div class="hl-grid">
+          <div class="hl-field"><label>数学连堂（周几）</label>
+            <select id="hl-math-day">
+              <option value="1">周一</option><option value="2">周二</option>
+              <option value="3">周三</option><option value="4">周四</option><option value="5">周五</option>
+            </select>
+          </div>
+          <div class="hl-field"><label>语文连堂（周几）</label>
+            <select id="hl-chinese-day">
+              <option value="1">周一</option><option value="2">周二</option>
+              <option value="3">周三</option><option value="4">周四</option><option value="5">周五</option>
+            </select>
+          </div>
+          <div class="hl-field"><label>英语连堂（周几）</label>
+            <select id="hl-english-day">
+              <option value="1">周一</option><option value="2">周二</option>
+              <option value="3">周三</option><option value="4">周四</option><option value="5">周五</option>
+            </select>
+          </div>
+        </div>
+        <div class="hl-field" style="margin-top:6px;">
+          <label>连堂说明</label>
+          <input type="text" id="hl-consec-rule">
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="step">关于</div>
       <div class="about">
         <p><strong>排课助手</strong> v0.1.0</p>
@@ -47,7 +128,115 @@
     const { invoke } = window.__TAURI__.core;
     const $ = id => document.getElementById(id);
 
-    let cfg = { default_output_dir: null, close_to_tray: true };
+    let cfg = {
+      default_output_dir: null,
+      close_to_tray: true,
+      hard_limits: null
+    };
+
+    function renderFixedList() {
+      const list = $('fixed-list');
+      list.innerHTML = '';
+      const days = ['','周一','周二','周三','周四','周五','周六','周日'];
+      cfg.hard_limits.fixed_classes.forEach((fc, idx) => {
+        const row = document.createElement('div');
+        row.className = 'fixed-row';
+        row.innerHTML = `
+          <select data-idx="${idx}" data-f="day">
+            ${days.map((d,i)=>`<option value="${i}" ${fc.day==i?'selected':''}>${d||'选'}</option>`).join('')}
+          </select>
+          <input type="number" data-idx="${idx}" data-f="period" value="${fc.period}" min="1" max="8" placeholder="节次">
+          <input type="text" data-idx="${idx}" data-f="subject" value="${fc.subject}" placeholder="科目">
+          <input type="text" data-idx="${idx}" data-f="note" value="${fc.note}" placeholder="备注">
+          <button class="small-btn" data-del="${idx}">删</button>
+        `;
+        list.appendChild(row);
+      });
+      list.querySelectorAll('select, input').forEach(el => {
+        el.onchange = () => {
+          const idx = +el.dataset.idx;
+          const f = el.dataset.f;
+          let v = el.value;
+          if (f === 'day' || f === 'period') v = +v;
+          cfg.hard_limits.fixed_classes[idx][f] = v;
+          save();
+        };
+      });
+      list.querySelectorAll('[data-del]').forEach(btn => {
+        btn.onclick = () => {
+          const idx = +btn.dataset.del;
+          cfg.hard_limits.fixed_classes.splice(idx, 1);
+          renderFixedList();
+          save();
+        };
+      });
+    }
+
+    function fillSchedule() {
+      const s = cfg.hard_limits.schedule;
+      $('hl-periods').value = s.periods_per_day;
+      $('hl-period-min').value = s.period_minutes;
+      $('hl-am-start').value = s.morning_start;
+      $('hl-am-end').value = s.morning_end;
+      $('hl-pm-start').value = s.afternoon_start;
+      $('hl-pm-end').value = s.afternoon_end;
+      $('hl-long-after').value = s.long_break_after_period;
+      $('hl-long-min').value = s.long_break_minutes;
+      $('hl-eye-after').value = s.eye_break_after_period;
+      $('hl-eye-min').value = s.eye_break_minutes;
+      $('hl-break-min').value = s.default_break_minutes;
+    }
+
+    function fillClasses() {
+      const c = cfg.hard_limits.classes;
+      $('hl-total').value = c.total_classes;
+      $('hl-policy').value = c.gaokao_policy;
+      $('hl-arts-start').value = c.arts_start;
+      $('hl-arts-end').value = c.arts_end;
+      $('hl-sci-start').value = c.science_start;
+      $('hl-sci-end').value = c.science_end;
+    }
+
+    function fillConsec() {
+      const c = cfg.hard_limits.consecutive;
+      $('hl-math-day').value = c.math_day;
+      $('hl-chinese-day').value = c.chinese_day;
+      $('hl-english-day').value = c.english_day;
+      $('hl-consec-rule').value = c.rule;
+    }
+
+    function collectSchedule() {
+      const s = cfg.hard_limits.schedule;
+      s.periods_per_day = +$('hl-periods').value;
+      s.period_minutes = +$('hl-period-min').value;
+      s.morning_start = $('hl-am-start').value;
+      s.morning_end = $('hl-am-end').value;
+      s.afternoon_start = $('hl-pm-start').value;
+      s.afternoon_end = $('hl-pm-end').value;
+      s.long_break_after_period = +$('hl-long-after').value;
+      s.long_break_minutes = +$('hl-long-min').value;
+      s.eye_break_after_period = +$('hl-eye-after').value;
+      s.eye_break_minutes = +$('hl-eye-min').value;
+      s.default_break_minutes = +$('hl-break-min').value;
+    }
+
+    function collectClasses() {
+      const c = cfg.hard_limits.classes;
+      c.total_classes = +$('hl-total').value;
+      c.gaokao_policy = $('hl-policy').value;
+      c.arts_start = +$('hl-arts-start').value;
+      c.arts_end = +$('hl-arts-end').value;
+      c.science_start = +$('hl-sci-start').value;
+      c.science_end = +$('hl-sci-end').value;
+    }
+
+    function collectConsec() {
+      const c = cfg.hard_limits.consecutive;
+      c.math_day = +$('hl-math-day').value;
+      c.chinese_day = +$('hl-chinese-day').value;
+      c.english_day = +$('hl-english-day').value;
+      c.rule = $('hl-consec-rule').value;
+    }
 
     async function load() {
       cfg = await invoke('get_config');
@@ -55,9 +244,16 @@
       document.querySelector(
         `input[name="close-behavior"][value="${cfg.close_to_tray ? 'tray' : 'quit'}"]`
       ).checked = true;
+      fillSchedule();
+      renderFixedList();
+      fillClasses();
+      fillConsec();
     }
 
     async function save() {
+      collectSchedule();
+      collectClasses();
+      collectConsec();
       cfg.close_to_tray = document.querySelector(
         'input[name="close-behavior"]:checked'
       ).value === 'tray';
@@ -77,9 +273,23 @@
       r.onchange = save;
     });
 
+    // 所有硬限制输入变化时自动保存
+    ['hl-periods','hl-period-min','hl-am-start','hl-am-end','hl-pm-start','hl-pm-end',
+     'hl-long-after','hl-long-min','hl-eye-after','hl-eye-min','hl-break-min',
+     'hl-total','hl-policy','hl-arts-start','hl-arts-end','hl-sci-start','hl-sci-end',
+     'hl-math-day','hl-chinese-day','hl-english-day','hl-consec-rule'].forEach(id => {
+      $(id).onchange = save;
+    });
+
+    $('btn-add-fixed').onclick = () => {
+      cfg.hard_limits.fixed_classes.push({ day: 1, period: 1, subject: '', note: '' });
+      renderFixedList();
+      save();
+    };
+
     $('btn-back').onclick = async () => {
+      await save();
       await invoke('show_main');
-      // 隐藏设置窗口自己
       await window.__TAURI__.window.getCurrentWindow().hide();
     };
 

@@ -74,11 +74,10 @@ def _overview_sheet(plans):
     return _sheet_xml(rows)
 
 
-def _plan_sheet(courses):
+def _plan_sheet(courses, period_labels):
     days = ["时间", "周一", "周二", "周三", "周四", "周五"]
-    lessons = [f"第{i}节" for i in range(1, 9)]
     rows = [days]
-    for ridx, lesson in enumerate(lessons):
+    for ridx, lesson in enumerate(period_labels):
         row = [lesson]
         for c in courses[ridx]:
             row.append(c)
@@ -136,7 +135,7 @@ def write_xlsx(path, sheet_specs):
 
 
 # ---------------------------------------------------------------- pdf 生成
-def write_pdf(path, task_id, plans, courses_by_plan, requirements):
+def write_pdf(path, task_id, plans, courses_by_plan, requirements, period_labels):
     """生成中文 PDF：总览页 + 每个方案一页课表表格。"""
     font_name = _register_font()
     styles = getSampleStyleSheet()
@@ -197,13 +196,12 @@ def write_pdf(path, task_id, plans, courses_by_plan, requirements):
         story.append(Spacer(1, 6*mm))
 
         days = ["时间", "周一", "周二", "周三", "周四", "周五"]
-        lessons = [f"第{j}节" for j in range(1, 9)]
         table_data = [days]
-        for ridx, lesson in enumerate(lessons):
+        for ridx, lesson in enumerate(period_labels):
             row = [lesson] + list(courses_by_plan[i][ridx])
             table_data.append(row)
 
-        tbl = Table(table_data, colWidths=[20*mm] + [28*mm]*5)
+        tbl = Table(table_data, colWidths=[45*mm] + [22*mm]*5)
         tbl.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), font_name),
             ('FONTSIZE', (0, 0), (-1, -1), 9),
@@ -251,7 +249,101 @@ def main():
         with open(req_path, "r", encoding="utf-8") as f:
             requirements = f.read().strip()
 
+    # 读取硬限制预设条件
+    hard_limits = {}
+    hl_path = os.path.join(in_dir, "hard_limits.json")
+    if os.path.exists(hl_path):
+        with open(hl_path, "r", encoding="utf-8-sig") as f:
+            hard_limits = json.load(f)
+
+    sched = hard_limits.get("schedule", {})
+    fixed_classes = hard_limits.get("fixed_classes", [])
+    consec = hard_limits.get("consecutive", {})
+    class_rule = hard_limits.get("classes", {})
+
+    # 计算每节课时间段
+    period_min = sched.get("period_minutes", 40)
+    am_start = sched.get("morning_start", "08:00")
+    am_end = sched.get("morning_end", "12:20")
+    pm_start = sched.get("afternoon_start", "14:30")
+    pm_end = sched.get("afternoon_end", "16:55")
+    long_break_after = sched.get("long_break_after_period", 3)
+    long_break_min = sched.get("long_break_minutes", 30)
+    eye_break_after = sched.get("eye_break_after_period", 6)
+    eye_break_min = sched.get("eye_break_minutes", 15)
+    default_break = sched.get("default_break_minutes", 10)
+    periods_per_day = sched.get("periods_per_day", 8)
+
+    # 生成每节课时间段标签
+    def parse_tm(t):
+        h, m = t.split(":")
+        return int(h)*60 + int(m)
+    def fmt_tm(minutes):
+        return f"{minutes//60:02d}:{minutes%60:02d}"
+
+    period_labels = []
+    cur = parse_tm(am_start)
+    for p in range(1, periods_per_day+1):
+        start = cur
+        end = cur + period_min
+        period_labels.append(f"第{p}节 {fmt_tm(start)}-{fmt_tm(end)}")
+        cur = end
+        if p < periods_per_day:
+            if p == long_break_after:
+                cur += long_break_min
+            elif p == eye_break_after:
+                cur += eye_break_min
+            else:
+                cur += default_break
+
     time.sleep(1)
+
+    # 根据硬限制生成课表（mock：体现固定课和连堂规则）
+    days = ["周一", "周二", "周三", "周四", "周五"]
+    # 8节 × 5天
+    def empty_grid():
+        return [["—"]*5 for _ in range(periods_per_day)]
+
+    grids = [empty_grid(), empty_grid(), empty_grid()]
+
+    # 应用固定课
+    for fc in fixed_classes:
+        day = fc.get("day", 1) - 1
+        period = fc.get("period", 1) - 1
+        subj = fc.get("subject", "")
+        if 0 <= day < 5 and 0 <= period < periods_per_day:
+            for g in grids:
+                g[period][day] = subj
+
+    # 应用连堂规则：周二上午数学连堂，周三语文，周四英语（上午第1-2节和4-5节）
+    math_day = consec.get("math_day", 2) - 1
+    chinese_day = consec.get("chinese_day", 3) - 1
+    english_day = consec.get("english_day", 4) - 1
+    # 上午连堂：第1-2节
+    for g in grids:
+        g[0][math_day] = "数学"
+        g[1][math_day] = "数学"
+        g[0][chinese_day] = "语文"
+        g[1][chinese_day] = "语文"
+        g[0][english_day] = "英语"
+        g[1][english_day] = "英语"
+        # 第4-5节另一个班也连堂
+        g[3][math_day] = "数学"
+        g[4][math_day] = "数学"
+        g[3][chinese_day] = "语文"
+        g[4][chinese_day] = "语文"
+        g[3][english_day] = "英语"
+        g[4][english_day] = "英语"
+
+    # 填充其他科目（mock：简单填充）
+    other_subjects = ["物理", "化学", "生物", "历史", "地理", "政治", "体育", "自习"]
+    for g in grids:
+        for p in range(periods_per_day):
+            for d in range(5):
+                if g[p][d] == "—":
+                    g[p][d] = other_subjects[(p+d) % len(other_subjects)]
+
+    courses_by_plan = grids
 
     plans = [
         {"index": 1, "name": "均衡方案", "score": 95.5,
@@ -262,20 +354,14 @@ def main():
          "note": "每天不超过6节课，自习时间充足"},
     ]
 
-    courses_by_plan = [
-        [["语文","数学","英语","物理","化学"]]*8,
-        [["数学","语文","物理","英语","—"]]*4 + [["化学","自习","体育","阅览","—"]]*4,
-        [["语文","数学","英语","—","—"]]*3 + [["物理","体育","自习","—","—"]]*3 + [["—","—","—","—","—"]]*2,
-    ]
-
     # xlsx
     sheet_specs = [("总览", _overview_sheet(plans))]
     for i, p in enumerate(plans):
-        sheet_specs.append((f"方案{p['index']}", _plan_sheet(courses_by_plan[i])))
+        sheet_specs.append((f"方案{p['index']}", _plan_sheet(courses_by_plan[i], period_labels)))
     write_xlsx(os.path.join(out_dir, "result.xlsx"), sheet_specs)
 
     # pdf（中文 + 表格）
-    write_pdf(os.path.join(out_dir, "result.pdf"), task_id, plans, courses_by_plan, requirements)
+    write_pdf(os.path.join(out_dir, "result.pdf"), task_id, plans, courses_by_plan, requirements, period_labels)
 
     warnings = [
         "【模拟引擎】这是占位输出，真正的排课结果请等待算法团队交付 engine.exe",
