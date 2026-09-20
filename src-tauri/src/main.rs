@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// 引擎运行超时（接口协议 §2：超时后强杀进程）
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
@@ -329,10 +333,64 @@ fn run_scheduler(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let child = cmd.spawn().map_err(|e| format!("启动引擎失败: {}", e))?;
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("引擎运行失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("启动引擎失败: {}", e))?;
+
+    // 独立线程读 stdout / stderr：管道缓冲区写满会阻塞引擎进程，必须并行读取
+    let stdout_handle = {
+        let mut pipe = child.stdout.take();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = pipe.as_mut() {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stderr_handle = {
+        let mut pipe = child.stderr.take();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = pipe.as_mut() {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+
+    // 轮询等待引擎退出；超过 10 分钟强杀进程（接口协议 §2）
+    let deadline = Instant::now() + ENGINE_TIMEOUT;
+    let mut timed_out = false;
+    let exit_status = loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => break Some(status),
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    };
+
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+    let _ = stdout_handle.join();
+
+    if timed_out {
+        // 超时：清理临时目录并直接返回失败（接口协议 §2“超时即返回”）
+        let _ = fs::remove_dir_all(&work_dir);
+        return Ok(SchedulerResult {
+            code: 2,
+            message: "排课超时（超过 10 分钟），已强制终止引擎进程，请检查数据或放宽约束后重试".to_string(),
+            warnings: vec![],
+            plans: vec![],
+            output_xlsx: None,
+            output_pdf: None,
+        });
+    }
+    let engine_ok = exit_status.map(|s| s.success()).unwrap_or(false);
 
     // 解析 status.json
     let status_path = out_dir.join("status.json");
@@ -400,8 +458,8 @@ fn run_scheduler(
             output_xlsx,
             output_pdf,
         }
-    } else if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
+    } else if !engine_ok {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         SchedulerResult {
             code: 2,
             message: format!("引擎异常退出: {}", stderr.trim()),

@@ -34,6 +34,7 @@ cargo tauri build
 ├── README.md              # 本文件
 ├── 安装说明.md            # 团队编译/环境准备
 ├── 接口协议.md            # 外壳 ↔ 引擎的调用约定（算法同学必读）
+├── 排课约束目录.md        # 排课约束规格（H/S/D/O/G），engine.py 的实现依据
 ├── 启动-开发.bat          # Windows 一键启动开发模式
 ├── .gitignore
 ├── src-tauri/             # Rust 外壳
@@ -47,7 +48,9 @@ cargo tauri build
 │   ├── settings.html      # 设置页
 │   └── style.css
 └── engine/                # 算法引擎
-    └── mock_engine.py     # 开发占位引擎（真正算法同学替换成 engine.exe）
+    ├── mock_engine.py     # 开发占位引擎（真正算法同学替换成 engine.exe）
+    └── reference/         # 参考求解器（OR-Tools CP-SAT，MIT）
+        └── ly398565721/   # 算法种子：建模 + 独立校验 + 测试
 ```
 
 ---
@@ -91,5 +94,5 @@ status.json（含 plans 数组，3-8 套多解）
 ## 分支 / 协作说明
 
 - `main`：稳定版
-- 算法引擎同学：按 `接口协议.md` 实现，产出 `engine.exe`，放到 `src-tauri/resources/engine/`
+- 算法引擎同学：按 `接口协议.md`（调用约定）+ `排课约束目录.md`（约束规格）实现 `engine.py`，参考 `engine/reference/ly398565721/` 的 CP-SAT 建模，产出 `engine.exe` 放到 `src-tauri/resources/engine/`
 - UI 同学：改 `ui/` 目录的 HTML/CSS，或 `src-tauri/src/main.rs`
