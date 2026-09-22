@@ -41,6 +41,35 @@ header h1 {
   font-weight: 600;
 }
 
+/* 年级切换栏 */
+.grade-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.grade-tab {
+  flex: 1;
+  padding: 10px 0;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-dim);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.grade-tab:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.grade-tab.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
 main {
   flex: 1;
   display: flex;
