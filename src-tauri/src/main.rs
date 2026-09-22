@@ -1,12 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
+
+/// 引擎运行超时（10 分钟后强杀进程）
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 // ==================== 配置 ====================
 
@@ -425,10 +429,45 @@ fn run_scheduler(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let child = cmd.spawn().map_err(|e| format!("启动排课引擎失败: {}", e))?;
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("排课引擎运行超时或失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("启动排课引擎失败: {}", e))?;
+
+    // 轮询等待引擎退出；超过 10 分钟强杀进程
+    let deadline = Instant::now() + ENGINE_TIMEOUT;
+    let mut timed_out = false;
+    let exit_status = loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => break Some(status),
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    };
+
+    // 读取 stdout/stderr
+    let _stdout = child.stdout.take()
+        .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
+        .unwrap_or_default();
+    let stderr = child.stderr.take()
+        .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
+        .unwrap_or_default();
+
+    if timed_out {
+        let _ = fs::remove_dir_all(&work_dir);
+        return Ok(SchedulerResult {
+            code: 2,
+            message: "排课引擎运行超时（超过 10 分钟），已自动终止。请减少班级或课程数量后重试".to_string(),
+            warnings: vec![],
+            plans: vec![],
+            output_xlsx: None,
+            output_pdf: None,
+        });
+    }
 
     // 解析 status.json
     let status_path = out_dir.join("status.json");
@@ -495,14 +534,14 @@ fn run_scheduler(
             output_xlsx,
             output_pdf,
         }
-    } else if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let friendly = if stderr.contains("input.xlsx") || stderr.contains("No such file") {
+    } else if !exit_status.map(|s| s.success()).unwrap_or(false) {
+        let stderr_str = String::from_utf8_lossy(&stderr);
+        let friendly = if stderr_str.contains("input.xlsx") || stderr_str.contains("No such file") {
             "输入文件格式不对，请检查 Excel 是否包含所需数据".to_string()
-        } else if stderr.contains("MemoryError") || stderr.contains("Memory") {
+        } else if stderr_str.contains("MemoryError") || stderr_str.contains("Memory") {
             "排课引擎内存不足，请减少班级或课程数量后重试".to_string()
         } else {
-            format!("排课引擎出错，请检查输入文件后重试（{}）", stderr.trim().chars().take(100).collect::<String>())
+            format!("排课引擎出错，请检查输入文件后重试（{}）", stderr_str.trim().chars().take(100).collect::<String>())
         };
         SchedulerResult {
             code: 2,

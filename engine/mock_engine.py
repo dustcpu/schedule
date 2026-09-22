@@ -281,9 +281,14 @@ def main():
     def fmt_tm(minutes):
         return f"{minutes//60:02d}:{minutes%60:02d}"
 
+    # 按上午/下午分段生成节次时间：放不进上午的节跳到下午开始（午休不排课）
     period_labels = []
     cur = parse_tm(am_start)
+    am_end_min = parse_tm(am_end)
+    pm_start_min = parse_tm(pm_start)
     for p in range(1, periods_per_day+1):
+        if p > 1 and cur < pm_start_min and cur + period_min > am_end_min:
+            cur = pm_start_min
         start = cur
         end = cur + period_min
         period_labels.append(f"第{p}节 {fmt_tm(start)}-{fmt_tm(end)}")
