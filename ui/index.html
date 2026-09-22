@@ -11,6 +11,13 @@
     <button id="btn-settings" class="ghost-btn">设置</button>
   </header>
 
+  <!-- 年级切换 -->
+  <div class="grade-tabs">
+    <button class="grade-tab active" data-grade="高一">高一</button>
+    <button class="grade-tab" data-grade="高二">高二</button>
+    <button class="grade-tab" data-grade="高三">高三</button>
+  </div>
+
   <main>
     <!-- 输入文件要求说明 -->
     <section class="card info-card">
@@ -72,6 +79,24 @@
     let inputPath = null;
     let outputDir = null;
     let currentConfig = null;
+    let currentGrade = '高一';
+    // 每个年级独立保存特殊要求，切换不丢失
+    let requirementsByGrade = { '高一': '', '高二': '', '高三': '' };
+
+    // 从 localStorage 恢复各年级的特殊要求
+    try {
+      const saved = localStorage.getItem('paike_requirements_by_grade');
+      if (saved) requirementsByGrade = { ...requirementsByGrade, ...JSON.parse(saved) };
+      const savedGrade = localStorage.getItem('paike_current_grade');
+      if (savedGrade && requirementsByGrade.hasOwnProperty(savedGrade)) currentGrade = savedGrade;
+    } catch (e) {}
+
+    function saveRequirementsToStorage() {
+      try {
+        localStorage.setItem('paike_requirements_by_grade', JSON.stringify(requirementsByGrade));
+        localStorage.setItem('paike_current_grade', currentGrade);
+      } catch (e) {}
+    }
 
     const $ = id => document.getElementById(id);
 
@@ -232,9 +257,12 @@
       $('result-area').classList.add('hidden');
 
       try {
+        // 把年级信息加到 requirements 开头，引擎可以据此选择对应的硬限制
+        const gradePrefix = `年级：${currentGrade}\n\n`;
+        const fullRequirements = gradePrefix + $('requirements').value;
         const r = await invoke('run_scheduler', {
           inputPath: inputPath,
-          requirements: $('requirements').value,
+          requirements: fullRequirements,
           outputDir: outputDir
         });
         if (r.code === 0) {
@@ -273,6 +301,31 @@
     const mainWin = getCurrentWindow();
     mainWin.onResized(scheduleSaveWindowState);
     mainWin.onMoved(scheduleSaveWindowState);
+
+    // 年级切换
+    document.querySelectorAll('.grade-tab').forEach(tab => {
+      tab.onclick = () => {
+        const grade = tab.dataset.grade;
+        if (grade === currentGrade) return;
+        // 保存当前年级的要求
+        requirementsByGrade[currentGrade] = $('requirements').value;
+        // 切换
+        currentGrade = grade;
+        document.querySelectorAll('.grade-tab').forEach(t => t.classList.toggle('active', t.dataset.grade === grade));
+        $('requirements').value = requirementsByGrade[grade] || '';
+        saveRequirementsToStorage();
+      };
+    });
+
+    // 初始化：恢复上次选中的年级和对应的要求
+    document.querySelectorAll('.grade-tab').forEach(t => t.classList.toggle('active', t.dataset.grade === currentGrade));
+    $('requirements').value = requirementsByGrade[currentGrade] || '';
+
+    // textarea 输入时实时保存当前年级的要求
+    $('requirements').addEventListener('input', () => {
+      requirementsByGrade[currentGrade] = $('requirements').value;
+      saveRequirementsToStorage();
+    });
 
     refreshConfig();
   </script>
