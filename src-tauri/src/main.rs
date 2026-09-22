@@ -364,6 +364,23 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn show_tutorial(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = w.eval(r#"
+            (function() {
+                var overlay = document.getElementById('tutorial-overlay');
+                if (overlay) overlay.classList.remove('hidden');
+            })();
+        "#);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn run_scheduler(
     app: tauri::AppHandle,
     input_path: String,
@@ -667,6 +684,7 @@ fn main() {
             open_settings,
             show_main,
             quit_app,
+            show_tutorial,
             get_file_info,
             save_window_state
         ])

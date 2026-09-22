@@ -288,6 +288,11 @@
       save();
     };
 
+    $('btn-show-tutorial').onclick = async () => {
+      await invoke('show_tutorial');
+      await window.__TAURI__.window.getCurrentWindow().hide();
+    };
+
     $('btn-back').onclick = async () => {
       await save();
       await invoke('show_main');

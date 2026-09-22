@@ -371,7 +371,7 @@
       {
         icon: '🚀',
         title: '最后一步：开始排课',
-        desc: '点击蓝色的「开始排课」按钮，喝杯水的功夫就好了！完成后会显示多套方案和评分，你可以挑最满意的一套用。不满意？改改要求再排一次就行。'
+        desc: '点击蓝色的「开始排课」按钮，喝杯水的功夫就好了！完成后会显示多套方案和评分，你可以挑最满意的一套用。不满意？改改要求再排一次就行。以后想再看教程？随时去「设置」→「关于」里点「重新查看新手教程」。'
       }
     ];
 
@@ -412,12 +412,6 @@
 
     $('tutorial-skip').onclick = finishTutorial;
 
-    // 监听来自设置页的「重新查看教程」事件
-    window.__TAURI__.event.listen('show-tutorial', () => {
-      tutorialStep = 0;
-      showTutorialStep();
-      tutorial-overlay.classList.remove('hidden');
-    });
 
     // 暴露给设置页调用：重新查看教程
     window.showTutorial = () => {
