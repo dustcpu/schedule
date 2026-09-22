@@ -12,12 +12,28 @@
   </header>
 
   <main>
+    <!-- 输入文件要求说明 -->
+    <section class="card info-card">
+      <div class="step">输入文件要求</div>
+      <div class="info-content">
+        <p>请上传包含以下内容的 <strong>.xlsx</strong> 文件：</p>
+        <ul>
+          <li><strong>教师名单</strong>：教师姓名、任教学科</li>
+          <li><strong>班级名单</strong>：班级编号、班级类型（文/理科）</li>
+          <li><strong>课程信息</strong>：各学科周课时要求</li>
+          <li><strong>特殊要求</strong>：教师/班级的不可排课时段（可选）</li>
+        </ul>
+        <p class="info-note">文件格式请参考团队提供的模板。</p>
+      </div>
+    </section>
+
     <section class="card">
-      <div class="step">① 输入数据（Excel）</div>
+      <div class="step">① 上传数据文件（Excel）</div>
       <div class="row">
         <button id="btn-pick-file" class="primary-btn">选择文件</button>
         <span id="file-name" class="path-text">未选择文件</span>
       </div>
+      <div id="file-size" class="file-size"></div>
     </section>
 
     <section class="card">
@@ -33,29 +49,57 @@
       </div>
     </section>
 
-    <button id="btn-run" class="big-btn">开始排课</button>
+    <!-- 当前硬限制摘要 -->
+    <div id="hard-limits-summary" class="hl-summary"></div>
+
+    <button id="btn-run" class="big-btn">
+      <span id="btn-run-text">开始排课</span>
+      <span id="btn-spinner" class="spinner hidden"></span>
+    </button>
 
     <div id="status" class="status ready">就绪</div>
 
     <section id="result-area" class="result hidden">
       <div class="step">结果文件</div>
-      <ul id="result-list"></ul>
+      <div id="result-cards" class="result-cards"></div>
     </section>
   </main>
 
   <script>
     const { invoke } = window.__TAURI__.core;
+    const { getCurrentWindow } = window.__TAURI__.window;
 
     let inputPath = null;
     let outputDir = null;
+    let currentConfig = null;
 
     const $ = id => document.getElementById(id);
 
+    const DAY_NAMES = ['', '周一', '周二', '周三', '周四', '周五'];
+
     async function refreshConfig() {
-      const cfg = await invoke('get_config');
-      if (cfg.default_output_dir) {
-        outputDir = cfg.default_output_dir;
+      currentConfig = await invoke('get_config');
+      if (currentConfig.default_output_dir) {
+        outputDir = currentConfig.default_output_dir;
         $('dir-name').textContent = outputDir;
+      }
+      renderHardLimitsSummary(currentConfig.hard_limits);
+    }
+
+    function renderHardLimitsSummary(hl) {
+      const s = hl.schedule;
+      const c = hl.consecutive;
+      const text = `当前生效：${s.periods_per_day}节/天，上午${s.morning_start}-${s.morning_end}，下午${s.afternoon_start}-${s.afternoon_end}；连堂：${DAY_NAMES[c.math_day]}数学、${DAY_NAMES[c.chinese_day]}语文、${DAY_NAMES[c.english_day]}英语`;
+      $('hard-limits-summary').textContent = text;
+    }
+
+    async function showFileSize(path) {
+      const info = await invoke('get_file_info', { path });
+      if (info.exists) {
+        $('file-size').textContent = '文件大小：' + info.size_human;
+        $('file-size').style.color = '#16a34a';
+      } else {
+        $('file-size').textContent = '';
       }
     }
 
@@ -64,6 +108,7 @@
       if (p) {
         inputPath = p;
         $('file-name').textContent = p;
+        await showFileSize(p);
       }
     };
 
@@ -71,15 +116,17 @@
       const p = await invoke('pick_output_dir');
       if (p) {
         outputDir = p;
-        $('dir-name').textContent = outputDir;
+        $('dir-name').textContent = p;
         await invoke('set_config', {
-          config: { default_output_dir: outputDir, close_to_tray: true }
+          config: { ...currentConfig, default_output_dir: outputDir }
         });
       }
     };
 
     $('btn-settings').onclick = async () => {
       await invoke('open_settings');
+      // 设置窗口关闭后刷新硬限制摘要
+      setTimeout(refreshConfig, 500);
     };
 
     function setStatus(cls, text, warnings) {
@@ -98,61 +145,73 @@
       }
     }
 
-    function renderResult(r) {
+    function formatTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts * 1000);
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    async function renderResult(r) {
       const area = $('result-area');
-      const list = $('result-list');
-      list.innerHTML = '';
+      const cards = $('result-cards');
+      cards.innerHTML = '';
 
       // 方案列表
       if (r.plans && r.plans.length) {
-        const header = document.createElement('div');
-        header.style.cssText = 'font-size:13px;color:#6b7280;margin-bottom:6px;';
-        header.textContent = '共生成 ' + r.plans.length + ' 套方案：';
-        list.appendChild(header);
+        const planCard = document.createElement('div');
+        planCard.className = 'result-card';
+        let html = '<div class="result-card-title">排课方案</div>';
+        html += '<div class="result-card-sub">共生成 ' + r.plans.length + ' 套方案</div>';
+        html += '<div class="plan-list">';
         r.plans.forEach(p => {
-          const li = document.createElement('li');
-          const left = document.createElement('span');
-          left.innerHTML = '<strong>方案' + p.index + '</strong>　' + p.name + '　<span style="color:#2563eb">评分 ' + p.score.toFixed(1) + '</span>　<span style="color:#6b7280">' + p.note + '</span>';
-          li.appendChild(left);
-          list.appendChild(li);
+          html += `<div class="plan-item">
+            <span class="plan-badge">方案${p.index}</span>
+            <span class="plan-name">${p.name}</span>
+            <span class="plan-score">评分 ${p.score.toFixed(1)}</span>
+            <span class="plan-note">${p.note}</span>
+          </div>`;
         });
-        const sep = document.createElement('div');
-        sep.style.cssText = 'height:10px;';
-        list.appendChild(sep);
+        html += '</div>';
+        planCard.innerHTML = html;
+        cards.appendChild(planCard);
       }
 
-      // 结果文件
-      if (r.output_xlsx) {
-        const li = document.createElement('li');
-        li.innerHTML = '<span>result.xlsx（总览 + 各方案 sheet）</span>';
-        const openBtn = document.createElement('button');
-        openBtn.className = 'ghost-btn';
-        openBtn.textContent = '打开';
-        openBtn.onclick = () => invoke('open_path', { path: r.output_xlsx });
-        li.appendChild(openBtn);
-        list.appendChild(li);
+      // 结果文件卡片
+      const files = [];
+      if (r.output_xlsx) files.push({ path: r.output_xlsx, name: 'result.xlsx', desc: '总览 + 各方案 sheet', icon: '📊' });
+      if (r.output_pdf) files.push({ path: r.output_pdf, name: 'result.pdf', desc: '总览 + 各方案页', icon: '📄' });
+
+      for (const f of files) {
+        const info = await invoke('get_file_info', { path: f.path });
+        const card = document.createElement('div');
+        card.className = 'result-card file-card';
+        card.innerHTML = `
+          <div class="file-icon">${f.icon}</div>
+          <div class="file-info">
+            <div class="file-name">${f.name}</div>
+            <div class="file-desc">${f.desc}</div>
+            <div class="file-meta">
+              <span>${info.size_human}</span>
+              <span>·</span>
+              <span>${formatTime(info.modified_ts)}</span>
+            </div>
+          </div>
+          <button class="primary-btn file-open-btn">打开</button>
+        `;
+        card.querySelector('.file-open-btn').onclick = () => invoke('open_path', { path: f.path });
+        cards.appendChild(card);
       }
-      if (r.output_pdf) {
-        const li = document.createElement('li');
-        li.innerHTML = '<span>result.pdf（总览 + 各方案页）</span>';
-        const openBtn = document.createElement('button');
-        openBtn.className = 'ghost-btn';
-        openBtn.textContent = '打开';
-        openBtn.onclick = () => invoke('open_path', { path: r.output_pdf });
-        li.appendChild(openBtn);
-        list.appendChild(li);
-      }
-      // 打开所在文件夹
-      if (r.output_xlsx || r.output_pdf) {
+
+      // 打开文件夹按钮
+      if (files.length) {
         const openDirBtn = document.createElement('button');
-        openDirBtn.className = 'ghost-btn';
+        openDirBtn.className = 'ghost-btn open-dir-btn';
         openDirBtn.textContent = '打开所在文件夹';
         openDirBtn.onclick = () => invoke('open_path', { path: outputDir });
-        const li = document.createElement('li');
-        li.style.justifyContent = 'flex-end';
-        li.appendChild(openDirBtn);
-        list.appendChild(li);
+        cards.appendChild(openDirBtn);
       }
+
       area.classList.remove('hidden');
     }
 
@@ -167,7 +226,9 @@
       }
       const btn = $('btn-run');
       btn.disabled = true;
-      setStatus('running', '正在排课，请稍候…');
+      $('btn-run-text').textContent = '排课中...';
+      $('btn-spinner').classList.remove('hidden');
+      setStatus('running', '正在排课，请稍候…（预计 10-30 秒）');
       $('result-area').classList.add('hidden');
 
       try {
@@ -188,8 +249,30 @@
         setStatus('error', '调用失败：' + e);
       } finally {
         btn.disabled = false;
+        $('btn-run-text').textContent = '开始排课';
+        $('btn-spinner').classList.add('hidden');
       }
     };
+
+    // 窗口大小和位置记忆（防抖保存）
+    let saveTimer = null;
+    function scheduleSaveWindowState() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        try {
+          const win = getCurrentWindow();
+          const size = await win.outerSize();
+          const pos = await win.outerPosition();
+          await invoke('save_window_state', {
+            x: pos.x, y: pos.y, width: size.width, height: size.height
+          });
+        } catch (e) {}
+      }, 500);
+    }
+
+    const mainWin = getCurrentWindow();
+    mainWin.onResized(scheduleSaveWindowState);
+    mainWin.onMoved(scheduleSaveWindowState);
 
     refreshConfig();
   </script>
