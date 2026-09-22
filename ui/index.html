@@ -72,6 +72,20 @@
     </section>
   </main>
 
+  <!-- 新手教程遮罩 -->
+  <div id="tutorial-overlay" class="tutorial-overlay hidden">
+    <div class="tutorial-card">
+      <div class="tutorial-icon" id="tutorial-icon">👋</div>
+      <h2 id="tutorial-title">欢迎使用排课助手</h2>
+      <p id="tutorial-desc"></p>
+      <div class="tutorial-dots" id="tutorial-dots"></div>
+      <div class="tutorial-buttons">
+        <button id="tutorial-skip" class="ghost-btn">跳过</button>
+        <button id="tutorial-next" class="primary-btn">下一步</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const { invoke } = window.__TAURI__.core;
     const { getCurrentWindow } = window.__TAURI__.window;
@@ -326,6 +340,102 @@
       requirementsByGrade[currentGrade] = $('requirements').value;
       saveRequirementsToStorage();
     });
+
+    // ==================== 新手教程 ====================
+    const TUTORIAL_STEPS = [
+      {
+        icon: '👋',
+        title: '欢迎使用排课助手',
+        desc: '我是你的排课小帮手！上传教师名单和班级数据，告诉我你的特殊要求，我就能在几十秒内排出 3-8 套合理课表供你挑选。全程离线运行，数据不会上传。'
+      },
+      {
+        icon: '🏫',
+        title: '第一步：选择年级',
+        desc: '顶部有高一、高二、高三三个标签，点击切换到你要排课的年级。每个年级的特殊要求会单独保存，下次打开自动恢复，不用重复输入。'
+      },
+      {
+        icon: '📊',
+        title: '第二步：上传 Excel 数据',
+        desc: '点击「选择文件」，上传包含教师名单、班级名单、课程信息的 Excel 文件。不确定格式？页面最上方的蓝色卡片里写了详细要求，可以参考团队提供的模板。'
+      },
+      {
+        icon: '📝',
+        title: '第三步：填写特殊要求（可选）',
+        desc: '如果有老师请假、班级活动、固定课时等特殊情况，写在这里就行。比如「张三老师周二下午有会」「周五下午留出社团时间」。没有特殊要求就留空。'
+      },
+      {
+        icon: '📁',
+        title: '第四步：选择输出目录',
+        desc: '点击「选择目录」，挑一个你方便找的文件夹。排课完成后，Excel 课表和 PDF 预览都会自动保存在这里，随时可以打开查看。'
+      },
+      {
+        icon: '🚀',
+        title: '最后一步：开始排课',
+        desc: '点击蓝色的「开始排课」按钮，喝杯水的功夫就好了！完成后会显示多套方案和评分，你可以挑最满意的一套用。不满意？改改要求再排一次就行。'
+      }
+    ];
+
+    let tutorialStep = 0;
+
+    function renderTutorialDots() {
+      const dots = $('tutorial-dots');
+      dots.innerHTML = '';
+      TUTORIAL_STEPS.forEach((_, i) => {
+        const dot = document.createElement('span');
+        dot.className = 'tutorial-dot' + (i === tutorialStep ? ' active' : '');
+        dots.appendChild(dot);
+      });
+    }
+
+    function showTutorialStep() {
+      const step = TUTORIAL_STEPS[tutorialStep];
+      $('tutorial-icon').textContent = step.icon;
+      $('tutorial-title').textContent = step.title;
+      $('tutorial-desc').textContent = step.desc;
+      $('tutorial-next').textContent = tutorialStep === TUTORIAL_STEPS.length - 1 ? '开始使用' : '下一步';
+      renderTutorialDots();
+    }
+
+    function finishTutorial() {
+      $('tutorial-overlay').classList.add('hidden');
+      try { localStorage.setItem('paike_tutorial_seen', '1'); } catch (e) {}
+    }
+
+    $('tutorial-next').onclick = () => {
+      if (tutorialStep < TUTORIAL_STEPS.length - 1) {
+        tutorialStep++;
+        showTutorialStep();
+      } else {
+        finishTutorial();
+      }
+    };
+
+    $('tutorial-skip').onclick = finishTutorial;
+
+    // 监听来自设置页的「重新查看教程」事件
+    window.__TAURI__.event.listen('show-tutorial', () => {
+      tutorialStep = 0;
+      showTutorialStep();
+      tutorial-overlay.classList.remove('hidden');
+    });
+
+    // 暴露给设置页调用：重新查看教程
+    window.showTutorial = () => {
+      tutorialStep = 0;
+      showTutorialStep();
+      $('tutorial-overlay').classList.remove('hidden');
+    };
+
+    // 第一次打开自动弹出教程
+    try {
+      if (!localStorage.getItem('paike_tutorial_seen')) {
+        setTimeout(() => {
+          tutorialStep = 0;
+          showTutorialStep();
+          $('tutorial-overlay').classList.remove('hidden');
+        }, 500);
+      }
+    } catch (e) {}
 
     refreshConfig();
   </script>

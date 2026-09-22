@@ -372,3 +372,88 @@ textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
   align-self: flex-end;
   margin-top: 4px;
 }
+
+/* 新手教程遮罩 */
+.tutorial-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+.tutorial-overlay.hidden { display: none; }
+
+.tutorial-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 32px 36px 24px;
+  width: 420px;
+  max-width: 90%;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  animation: tutorialPop 0.3s ease;
+}
+@keyframes tutorialPop {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.tutorial-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.tutorial-card h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.tutorial-card p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-dim);
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.tutorial-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+.tutorial-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d1d5db;
+  transition: all 0.2s ease;
+}
+.tutorial-dot.active {
+  background: var(--primary);
+  width: 24px;
+  border-radius: 4px;
+}
+
+.tutorial-buttons {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.tutorial-buttons .primary-btn {
+  flex: 1;
+  padding: 10px;
+  font-size: 14px;
+}
+.tutorial-buttons .ghost-btn {
+  padding: 10px 16px;
+}
