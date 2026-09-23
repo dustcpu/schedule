@@ -41,6 +41,35 @@ header h1 {
   font-weight: 600;
 }
 
+/* 年级切换栏 */
+.grade-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.grade-tab {
+  flex: 1;
+  padding: 10px 0;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-dim);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.grade-tab:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.grade-tab.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
 main {
   flex: 1;
   display: flex;
@@ -184,3 +213,247 @@ textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
   color: var(--warn);
 }
 .warnings li { margin: 2px 0; }
+
+/* 加载动画 */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+.spinner.hidden { display: none; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 输入文件要求说明卡片 */
+.info-card {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+.info-card .step { color: #2563eb; }
+.info-content { font-size: 13px; line-height: 1.7; color: var(--text); }
+.info-content p { margin: 4px 0; }
+.info-content ul { margin: 6px 0 6px 20px; }
+.info-content li { margin: 2px 0; }
+.info-note { color: var(--text-dim); font-size: 12px; margin-top: 8px; }
+
+/* 文件大小显示 */
+.file-size {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  margin-left: 2px;
+}
+
+/* big-btn 里的文字和 spinner 居中对齐 */
+.big-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.big-btn:disabled .spinner {
+  border-color: rgba(255,255,255,0.3);
+  border-top-color: #fff;
+}
+
+/* 硬限制摘要 */
+.hl-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  background: #f9fafb;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  line-height: 1.6;
+  margin-bottom: 4px;
+}
+
+/* 结果卡片 */
+.result-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.result-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.result-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.result-card-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+/* 方案列表 */
+.plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plan-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #f9fafb;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.plan-badge {
+  background: var(--primary);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.plan-name {
+  font-weight: 600;
+}
+.plan-score {
+  color: var(--primary);
+  font-weight: 600;
+}
+.plan-note {
+  color: var(--text-dim);
+  font-size: 12px;
+  flex: 1;
+}
+
+/* 文件卡片 */
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.file-icon {
+  font-size: 28px;
+  width: 44px;
+  text-align: center;
+}
+.file-info {
+  flex: 1;
+}
+.file-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.file-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 2px 0;
+}
+.file-meta {
+  font-size: 11px;
+  color: #9ca3af;
+  display: flex;
+  gap: 6px;
+}
+.file-open-btn {
+  padding: 8px 18px;
+  font-size: 13px;
+}
+.open-dir-btn {
+  align-self: flex-end;
+  margin-top: 4px;
+}
+
+/* 新手教程遮罩 */
+.tutorial-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+.tutorial-overlay.hidden { display: none; }
+
+.tutorial-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 32px 36px 24px;
+  width: 420px;
+  max-width: 90%;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  animation: tutorialPop 0.3s ease;
+}
+@keyframes tutorialPop {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.tutorial-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.tutorial-card h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.tutorial-card p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-dim);
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.tutorial-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+.tutorial-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d1d5db;
+  transition: all 0.2s ease;
+}
+.tutorial-dot.active {
+  background: var(--primary);
+  width: 24px;
+  border-radius: 4px;
+}
+
+.tutorial-buttons {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.tutorial-buttons .primary-btn {
+  flex: 1;
+  padding: 10px;
+  font-size: 14px;
+}
+.tutorial-buttons .ghost-btn {
+  padding: 10px 16px;
+}

@@ -11,13 +11,36 @@
     <button id="btn-settings" class="ghost-btn">设置</button>
   </header>
 
+  <!-- 年级切换 -->
+  <div class="grade-tabs">
+    <button class="grade-tab active" data-grade="高一">高一</button>
+    <button class="grade-tab" data-grade="高二">高二</button>
+    <button class="grade-tab" data-grade="高三">高三</button>
+  </div>
+
   <main>
+    <!-- 输入文件要求说明 -->
+    <section class="card info-card">
+      <div class="step">输入文件要求</div>
+      <div class="info-content">
+        <p>请上传包含以下内容的 <strong>.xlsx</strong> 文件：</p>
+        <ul>
+          <li><strong>教师名单</strong>：教师姓名、任教学科</li>
+          <li><strong>班级名单</strong>：班级编号、班级类型（文/理科）</li>
+          <li><strong>课程信息</strong>：各学科周课时要求</li>
+          <li><strong>特殊要求</strong>：教师/班级的不可排课时段（可选）</li>
+        </ul>
+        <p class="info-note">文件格式请参考团队提供的模板。</p>
+      </div>
+    </section>
+
     <section class="card">
-      <div class="step">① 输入数据（Excel）</div>
+      <div class="step">① 上传数据文件（Excel）</div>
       <div class="row">
         <button id="btn-pick-file" class="primary-btn">选择文件</button>
         <span id="file-name" class="path-text">未选择文件</span>
       </div>
+      <div id="file-size" class="file-size"></div>
     </section>
 
     <section class="card">
@@ -33,29 +56,89 @@
       </div>
     </section>
 
-    <button id="btn-run" class="big-btn">开始排课</button>
+    <!-- 当前硬限制摘要 -->
+    <div id="hard-limits-summary" class="hl-summary"></div>
+
+    <button id="btn-run" class="big-btn">
+      <span id="btn-run-text">开始排课</span>
+      <span id="btn-spinner" class="spinner hidden"></span>
+    </button>
 
     <div id="status" class="status ready">就绪</div>
 
     <section id="result-area" class="result hidden">
       <div class="step">结果文件</div>
-      <ul id="result-list"></ul>
+      <div id="result-cards" class="result-cards"></div>
     </section>
   </main>
 
+  <!-- 新手教程遮罩 -->
+  <div id="tutorial-overlay" class="tutorial-overlay hidden">
+    <div class="tutorial-card">
+      <div class="tutorial-icon" id="tutorial-icon">👋</div>
+      <h2 id="tutorial-title">欢迎使用排课助手</h2>
+      <p id="tutorial-desc"></p>
+      <div class="tutorial-dots" id="tutorial-dots"></div>
+      <div class="tutorial-buttons">
+        <button id="tutorial-skip" class="ghost-btn">跳过</button>
+        <button id="tutorial-next" class="primary-btn">下一步</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const { invoke } = window.__TAURI__.core;
+    const { getCurrentWindow } = window.__TAURI__.window;
 
     let inputPath = null;
     let outputDir = null;
+    let currentConfig = null;
+    let currentGrade = '高一';
+    // 每个年级独立保存特殊要求，切换不丢失
+    let requirementsByGrade = { '高一': '', '高二': '', '高三': '' };
+
+    // 从 localStorage 恢复各年级的特殊要求
+    try {
+      const saved = localStorage.getItem('paike_requirements_by_grade');
+      if (saved) requirementsByGrade = { ...requirementsByGrade, ...JSON.parse(saved) };
+      const savedGrade = localStorage.getItem('paike_current_grade');
+      if (savedGrade && requirementsByGrade.hasOwnProperty(savedGrade)) currentGrade = savedGrade;
+    } catch (e) {}
+
+    function saveRequirementsToStorage() {
+      try {
+        localStorage.setItem('paike_requirements_by_grade', JSON.stringify(requirementsByGrade));
+        localStorage.setItem('paike_current_grade', currentGrade);
+      } catch (e) {}
+    }
 
     const $ = id => document.getElementById(id);
 
+    const DAY_NAMES = ['', '周一', '周二', '周三', '周四', '周五'];
+
     async function refreshConfig() {
-      const cfg = await invoke('get_config');
-      if (cfg.default_output_dir) {
-        outputDir = cfg.default_output_dir;
+      currentConfig = await invoke('get_config');
+      if (currentConfig.default_output_dir) {
+        outputDir = currentConfig.default_output_dir;
         $('dir-name').textContent = outputDir;
+      }
+      renderHardLimitsSummary(currentConfig.hard_limits);
+    }
+
+    function renderHardLimitsSummary(hl) {
+      const s = hl.schedule;
+      const c = hl.consecutive;
+      const text = `当前生效：${s.periods_per_day}节/天，上午${s.morning_start}-${s.morning_end}，下午${s.afternoon_start}-${s.afternoon_end}；连堂：${DAY_NAMES[c.math_day]}数学、${DAY_NAMES[c.chinese_day]}语文、${DAY_NAMES[c.english_day]}英语`;
+      $('hard-limits-summary').textContent = text;
+    }
+
+    async function showFileSize(path) {
+      const info = await invoke('get_file_info', { path });
+      if (info.exists) {
+        $('file-size').textContent = '文件大小：' + info.size_human;
+        $('file-size').style.color = '#16a34a';
+      } else {
+        $('file-size').textContent = '';
       }
     }
 
@@ -64,6 +147,7 @@
       if (p) {
         inputPath = p;
         $('file-name').textContent = p;
+        await showFileSize(p);
       }
     };
 
@@ -71,17 +155,17 @@
       const p = await invoke('pick_output_dir');
       if (p) {
         outputDir = p;
-        $('dir-name').textContent = outputDir;
-        // 先取完整配置再改字段：Rust 侧 Config 含 hard_limits，
-        // 只传两个字段会反序列化失败，且会覆盖用户的其他设置
-        const cfg = await invoke('get_config');
-        cfg.default_output_dir = outputDir;
-        await invoke('set_config', { config: cfg });
+        $('dir-name').textContent = p;
+        await invoke('set_config', {
+          config: { ...currentConfig, default_output_dir: outputDir }
+        });
       }
     };
 
     $('btn-settings').onclick = async () => {
       await invoke('open_settings');
+      // 设置窗口关闭后刷新硬限制摘要
+      setTimeout(refreshConfig, 500);
     };
 
     function setStatus(cls, text, warnings) {
@@ -100,61 +184,73 @@
       }
     }
 
-    function renderResult(r) {
+    function formatTime(ts) {
+      if (!ts) return '';
+      const d = new Date(ts * 1000);
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    async function renderResult(r) {
       const area = $('result-area');
-      const list = $('result-list');
-      list.innerHTML = '';
+      const cards = $('result-cards');
+      cards.innerHTML = '';
 
       // 方案列表
       if (r.plans && r.plans.length) {
-        const header = document.createElement('div');
-        header.style.cssText = 'font-size:13px;color:#6b7280;margin-bottom:6px;';
-        header.textContent = '共生成 ' + r.plans.length + ' 套方案：';
-        list.appendChild(header);
+        const planCard = document.createElement('div');
+        planCard.className = 'result-card';
+        let html = '<div class="result-card-title">排课方案</div>';
+        html += '<div class="result-card-sub">共生成 ' + r.plans.length + ' 套方案</div>';
+        html += '<div class="plan-list">';
         r.plans.forEach(p => {
-          const li = document.createElement('li');
-          const left = document.createElement('span');
-          left.innerHTML = '<strong>方案' + p.index + '</strong>　' + p.name + '　<span style="color:#2563eb">评分 ' + p.score.toFixed(1) + '</span>　<span style="color:#6b7280">' + p.note + '</span>';
-          li.appendChild(left);
-          list.appendChild(li);
+          html += `<div class="plan-item">
+            <span class="plan-badge">方案${p.index}</span>
+            <span class="plan-name">${p.name}</span>
+            <span class="plan-score">评分 ${p.score.toFixed(1)}</span>
+            <span class="plan-note">${p.note}</span>
+          </div>`;
         });
-        const sep = document.createElement('div');
-        sep.style.cssText = 'height:10px;';
-        list.appendChild(sep);
+        html += '</div>';
+        planCard.innerHTML = html;
+        cards.appendChild(planCard);
       }
 
-      // 结果文件
-      if (r.output_xlsx) {
-        const li = document.createElement('li');
-        li.innerHTML = '<span>result.xlsx（总览 + 各方案 sheet）</span>';
-        const openBtn = document.createElement('button');
-        openBtn.className = 'ghost-btn';
-        openBtn.textContent = '打开';
-        openBtn.onclick = () => invoke('open_path', { path: r.output_xlsx });
-        li.appendChild(openBtn);
-        list.appendChild(li);
+      // 结果文件卡片
+      const files = [];
+      if (r.output_xlsx) files.push({ path: r.output_xlsx, name: 'result.xlsx', desc: '总览 + 各方案 sheet', icon: '📊' });
+      if (r.output_pdf) files.push({ path: r.output_pdf, name: 'result.pdf', desc: '总览 + 各方案页', icon: '📄' });
+
+      for (const f of files) {
+        const info = await invoke('get_file_info', { path: f.path });
+        const card = document.createElement('div');
+        card.className = 'result-card file-card';
+        card.innerHTML = `
+          <div class="file-icon">${f.icon}</div>
+          <div class="file-info">
+            <div class="file-name">${f.name}</div>
+            <div class="file-desc">${f.desc}</div>
+            <div class="file-meta">
+              <span>${info.size_human}</span>
+              <span>·</span>
+              <span>${formatTime(info.modified_ts)}</span>
+            </div>
+          </div>
+          <button class="primary-btn file-open-btn">打开</button>
+        `;
+        card.querySelector('.file-open-btn').onclick = () => invoke('open_path', { path: f.path });
+        cards.appendChild(card);
       }
-      if (r.output_pdf) {
-        const li = document.createElement('li');
-        li.innerHTML = '<span>result.pdf（总览 + 各方案页）</span>';
-        const openBtn = document.createElement('button');
-        openBtn.className = 'ghost-btn';
-        openBtn.textContent = '打开';
-        openBtn.onclick = () => invoke('open_path', { path: r.output_pdf });
-        li.appendChild(openBtn);
-        list.appendChild(li);
-      }
-      // 打开所在文件夹
-      if (r.output_xlsx || r.output_pdf) {
+
+      // 打开文件夹按钮
+      if (files.length) {
         const openDirBtn = document.createElement('button');
-        openDirBtn.className = 'ghost-btn';
+        openDirBtn.className = 'ghost-btn open-dir-btn';
         openDirBtn.textContent = '打开所在文件夹';
         openDirBtn.onclick = () => invoke('open_path', { path: outputDir });
-        const li = document.createElement('li');
-        li.style.justifyContent = 'flex-end';
-        li.appendChild(openDirBtn);
-        list.appendChild(li);
+        cards.appendChild(openDirBtn);
       }
+
       area.classList.remove('hidden');
     }
 
@@ -169,13 +265,18 @@
       }
       const btn = $('btn-run');
       btn.disabled = true;
-      setStatus('running', '正在排课，请稍候…');
+      $('btn-run-text').textContent = '排课中...';
+      $('btn-spinner').classList.remove('hidden');
+      setStatus('running', '正在排课，请稍候…（预计 10-30 秒）');
       $('result-area').classList.add('hidden');
 
       try {
+        // 把年级信息加到 requirements 开头，引擎可以据此选择对应的硬限制
+        const gradePrefix = `年级：${currentGrade}\n\n`;
+        const fullRequirements = gradePrefix + $('requirements').value;
         const r = await invoke('run_scheduler', {
           inputPath: inputPath,
-          requirements: $('requirements').value,
+          requirements: fullRequirements,
           outputDir: outputDir
         });
         if (r.code === 0) {
@@ -190,8 +291,145 @@
         setStatus('error', '调用失败：' + e);
       } finally {
         btn.disabled = false;
+        $('btn-run-text').textContent = '开始排课';
+        $('btn-spinner').classList.add('hidden');
       }
     };
+
+    // 窗口大小和位置记忆（防抖保存）
+    let saveTimer = null;
+    function scheduleSaveWindowState() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        try {
+          const win = getCurrentWindow();
+          const size = await win.outerSize();
+          const pos = await win.outerPosition();
+          await invoke('save_window_state', {
+            x: pos.x, y: pos.y, width: size.width, height: size.height
+          });
+        } catch (e) {}
+      }, 500);
+    }
+
+    const mainWin = getCurrentWindow();
+    mainWin.onResized(scheduleSaveWindowState);
+    mainWin.onMoved(scheduleSaveWindowState);
+
+    // 年级切换
+    document.querySelectorAll('.grade-tab').forEach(tab => {
+      tab.onclick = () => {
+        const grade = tab.dataset.grade;
+        if (grade === currentGrade) return;
+        // 保存当前年级的要求
+        requirementsByGrade[currentGrade] = $('requirements').value;
+        // 切换
+        currentGrade = grade;
+        document.querySelectorAll('.grade-tab').forEach(t => t.classList.toggle('active', t.dataset.grade === grade));
+        $('requirements').value = requirementsByGrade[grade] || '';
+        saveRequirementsToStorage();
+      };
+    });
+
+    // 初始化：恢复上次选中的年级和对应的要求
+    document.querySelectorAll('.grade-tab').forEach(t => t.classList.toggle('active', t.dataset.grade === currentGrade));
+    $('requirements').value = requirementsByGrade[currentGrade] || '';
+
+    // textarea 输入时实时保存当前年级的要求
+    $('requirements').addEventListener('input', () => {
+      requirementsByGrade[currentGrade] = $('requirements').value;
+      saveRequirementsToStorage();
+    });
+
+    // ==================== 新手教程 ====================
+    const TUTORIAL_STEPS = [
+      {
+        icon: '👋',
+        title: '欢迎使用排课助手',
+        desc: '我是你的排课小帮手！上传教师名单和班级数据，告诉我你的特殊要求，我就能在几十秒内排出 3-8 套合理课表供你挑选。全程离线运行，数据不会上传。'
+      },
+      {
+        icon: '🏫',
+        title: '第一步：选择年级',
+        desc: '顶部有高一、高二、高三三个标签，点击切换到你要排课的年级。每个年级的特殊要求会单独保存，下次打开自动恢复，不用重复输入。'
+      },
+      {
+        icon: '📊',
+        title: '第二步：上传 Excel 数据',
+        desc: '点击「选择文件」，上传包含教师名单、班级名单、课程信息的 Excel 文件。不确定格式？页面最上方的蓝色卡片里写了详细要求，可以参考团队提供的模板。'
+      },
+      {
+        icon: '📝',
+        title: '第三步：填写特殊要求（可选）',
+        desc: '如果有老师请假、班级活动、固定课时等特殊情况，写在这里就行。比如「张三老师周二下午有会」「周五下午留出社团时间」。没有特殊要求就留空。'
+      },
+      {
+        icon: '📁',
+        title: '第四步：选择输出目录',
+        desc: '点击「选择目录」，挑一个你方便找的文件夹。排课完成后，Excel 课表和 PDF 预览都会自动保存在这里，随时可以打开查看。'
+      },
+      {
+        icon: '🚀',
+        title: '最后一步：开始排课',
+        desc: '点击蓝色的「开始排课」按钮，喝杯水的功夫就好了！完成后会显示多套方案和评分，你可以挑最满意的一套用。不满意？改改要求再排一次就行。以后想再看教程？随时去「设置」→「关于」里点「重新查看新手教程」。'
+      }
+    ];
+
+    let tutorialStep = 0;
+
+    function renderTutorialDots() {
+      const dots = $('tutorial-dots');
+      dots.innerHTML = '';
+      TUTORIAL_STEPS.forEach((_, i) => {
+        const dot = document.createElement('span');
+        dot.className = 'tutorial-dot' + (i === tutorialStep ? ' active' : '');
+        dots.appendChild(dot);
+      });
+    }
+
+    function showTutorialStep() {
+      const step = TUTORIAL_STEPS[tutorialStep];
+      $('tutorial-icon').textContent = step.icon;
+      $('tutorial-title').textContent = step.title;
+      $('tutorial-desc').textContent = step.desc;
+      $('tutorial-next').textContent = tutorialStep === TUTORIAL_STEPS.length - 1 ? '开始使用' : '下一步';
+      renderTutorialDots();
+    }
+
+    function finishTutorial() {
+      $('tutorial-overlay').classList.add('hidden');
+      try { localStorage.setItem('paike_tutorial_seen', '1'); } catch (e) {}
+    }
+
+    $('tutorial-next').onclick = () => {
+      if (tutorialStep < TUTORIAL_STEPS.length - 1) {
+        tutorialStep++;
+        showTutorialStep();
+      } else {
+        finishTutorial();
+      }
+    };
+
+    $('tutorial-skip').onclick = finishTutorial;
+
+
+    // 暴露给设置页调用：重新查看教程
+    window.showTutorial = () => {
+      tutorialStep = 0;
+      showTutorialStep();
+      $('tutorial-overlay').classList.remove('hidden');
+    };
+
+    // 第一次打开自动弹出教程
+    try {
+      if (!localStorage.getItem('paike_tutorial_seen')) {
+        setTimeout(() => {
+          tutorialStep = 0;
+          showTutorialStep();
+          $('tutorial-overlay').classList.remove('hidden');
+        }, 500);
+      }
+    } catch (e) {}
 
     refreshConfig();
   </script>
