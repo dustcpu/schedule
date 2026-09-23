@@ -3,14 +3,14 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// 引擎运行超时（接口协议 §2：超时后强杀进程）
-const ENGINE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
+
+/// 引擎运行超时（10 分钟后强杀进程）
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 // ==================== 配置 ====================
 
@@ -22,6 +22,16 @@ struct Config {
     close_to_tray: bool,
     /// 硬限制预设条件（教务老师可在设置里查看/修改）
     hard_limits: HardLimits,
+    /// 窗口状态（大小和位置，启动时恢复）
+    window_state: Option<WindowState>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct WindowState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -136,6 +146,7 @@ impl Default for Config {
                     rule: "老师一般带2个班，一个班上午1-2节，另一个班上午4-5节".to_string(),
                 },
             },
+            window_state: None,
         }
     }
 }
@@ -157,6 +168,68 @@ fn temp_work_dir() -> PathBuf {
     let dir = config_dir().join("temp");
     let _ = fs::create_dir_all(&dir);
     dir
+}
+
+/// 启动时清理 7 天前的临时任务目录
+fn cleanup_old_temp_dirs() {
+    let temp = temp_work_dir();
+    let now = SystemTime::now();
+    let cutoff = now - Duration::from_secs(7 * 24 * 3600);
+    if let Ok(entries) = fs::read_dir(&temp) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let stale = fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .map(|t| t < cutoff)
+                    .unwrap_or(false);
+                if stale {
+                    let _ = fs::remove_dir_all(&path);
+                }
+            }
+        }
+    }
+}
+
+/// 文件信息（前端校验和结果展示用）
+#[derive(Serialize)]
+struct FileInfo {
+    exists: bool,
+    size_bytes: u64,
+    size_human: String,
+    modified_ts: i64,
+}
+
+#[tauri::command]
+fn get_file_info(path: String) -> FileInfo {
+    let p = Path::new(&path);
+    match fs::metadata(p) {
+        Ok(meta) => {
+            let size = meta.len();
+            let size_f = size as f64;
+            let human = if size < 1024 {
+                format!("{} B", size)
+            } else if size < 1024 * 1024 {
+                format!("{:.1} KB", size_f / 1024.0)
+            } else {
+                format!("{:.1} MB", size_f / (1024.0 * 1024.0))
+            };
+            let modified_ts = meta.modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            FileInfo { exists: true, size_bytes: size, size_human: human, modified_ts }
+        }
+        Err(_) => FileInfo { exists: false, size_bytes: 0, size_human: "".into(), modified_ts: 0 },
+    }
+}
+
+#[tauri::command]
+fn save_window_state(x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
+    let mut cfg = load_config();
+    cfg.window_state = Some(WindowState { x, y, width, height });
+    save_config(&cfg)
 }
 
 fn load_config() -> Config {
@@ -291,20 +364,52 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn show_tutorial(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = w.eval(r#"
+            (function() {
+                var overlay = document.getElementById('tutorial-overlay');
+                if (overlay) overlay.classList.remove('hidden');
+            })();
+        "#);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn run_scheduler(
     app: tauri::AppHandle,
     input_path: String,
     requirements: String,
     output_dir: String,
 ) -> Result<SchedulerResult, String> {
+    // 校验输入文件
+    let input_meta = fs::metadata(&input_path).map_err(|_| "输入文件不存在，请重新选择".to_string())?;
+    if input_meta.len() == 0 {
+        return Err("输入文件为空，请检查 Excel 文件".to_string());
+    }
+    if input_meta.len() < 200 {
+        return Err("输入文件太小，可能不是有效的 Excel 文件".to_string());
+    }
+
+    // 校验输出目录
+    let out = Path::new(&output_dir);
+    if !out.exists() {
+        fs::create_dir_all(out).map_err(|_| "输出目录不存在，且无法创建".to_string())?;
+    }
+
     let task_id = generate_task_id();
     let work_dir = temp_work_dir().join(&task_id);
     let in_dir = work_dir.join("input");
     let out_dir = work_dir.join("output");
-    fs::create_dir_all(&in_dir).map_err(|e| e.to_string())?;
-    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&in_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    fs::create_dir_all(&out_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
 
-    // 复制输入文件为 input.xlsx（保留原扩展名，统一叫 input.<ext>）
+    // 复制输入文件
     let ext = Path::new(&input_path)
         .extension()
         .and_then(|s| s.to_str())
@@ -316,7 +421,7 @@ fn run_scheduler(
     fs::write(in_dir.join("requirements.txt"), requirements)
         .map_err(|e| format!("写入要求文件失败: {}", e))?;
 
-    // 写 hard_limits.json（硬限制预设条件，从配置里带过来）
+    // 写 hard_limits.json
     let cfg = load_config();
     let hl_json = serde_json::to_string_pretty(&cfg.hard_limits)
         .map_err(|e| format!("序列化硬限制失败: {}", e))?;
@@ -324,7 +429,15 @@ fn run_scheduler(
         .map_err(|e| format!("写入硬限制文件失败: {}", e))?;
 
     // 启动引擎
-    let (program, extra_args) = build_engine_command(&app)?;
+    let (program, extra_args) = build_engine_command(&app).map_err(|e| {
+        if e.contains("未找到排课引擎") {
+            "排课引擎未安装，请联系技术人员".to_string()
+        } else if e.contains("未找到 Python") {
+            "未找到 Python 运行环境，请联系技术人员".to_string()
+        } else {
+            e
+        }
+    })?;
     let mut cmd = Command::new(&program);
     cmd.args(&extra_args);
     cmd.arg(&in_dir);
@@ -333,31 +446,9 @@ fn run_scheduler(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| format!("启动引擎失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("启动排课引擎失败: {}", e))?;
 
-    // 独立线程读 stdout / stderr：管道缓冲区写满会阻塞引擎进程，必须并行读取
-    let stdout_handle = {
-        let mut pipe = child.stdout.take();
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(p) = pipe.as_mut() {
-                let _ = p.read_to_end(&mut buf);
-            }
-            buf
-        })
-    };
-    let stderr_handle = {
-        let mut pipe = child.stderr.take();
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(p) = pipe.as_mut() {
-                let _ = p.read_to_end(&mut buf);
-            }
-            buf
-        })
-    };
-
-    // 轮询等待引擎退出；超过 10 分钟强杀进程（接口协议 §2）
+    // 轮询等待引擎退出；超过 10 分钟强杀进程
     let deadline = Instant::now() + ENGINE_TIMEOUT;
     let mut timed_out = false;
     let exit_status = loop {
@@ -375,34 +466,37 @@ fn run_scheduler(
         }
     };
 
-    let stderr_bytes = stderr_handle.join().unwrap_or_default();
-    let _ = stdout_handle.join();
+    // 读取 stdout/stderr
+    let _stdout = child.stdout.take()
+        .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
+        .unwrap_or_default();
+    let stderr = child.stderr.take()
+        .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
+        .unwrap_or_default();
 
     if timed_out {
-        // 超时：清理临时目录并直接返回失败（接口协议 §2“超时即返回”）
         let _ = fs::remove_dir_all(&work_dir);
         return Ok(SchedulerResult {
             code: 2,
-            message: "排课超时（超过 10 分钟），已强制终止引擎进程，请检查数据或放宽约束后重试".to_string(),
+            message: "排课引擎运行超时（超过 10 分钟），已自动终止。请减少班级或课程数量后重试".to_string(),
             warnings: vec![],
             plans: vec![],
             output_xlsx: None,
             output_pdf: None,
         });
     }
-    let engine_ok = exit_status.map(|s| s.success()).unwrap_or(false);
 
     // 解析 status.json
     let status_path = out_dir.join("status.json");
     let result = if status_path.exists() {
-        let s = fs::read_to_string(&status_path).map_err(|e| e.to_string())?;
+        let s = fs::read_to_string(&status_path).map_err(|e| format!("读取排课结果失败: {}", e))?;
         let raw: serde_json::Value =
-            serde_json::from_str(&s).map_err(|e| format!("status.json 解析失败: {}", e))?;
+            serde_json::from_str(&s).map_err(|_| "排课结果格式错误，请重试".to_string())?;
         let code = raw.get("code").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
         let message = raw
             .get("message")
             .and_then(|v| v.as_str())
-            .unwrap_or("未知")
+            .unwrap_or("排课完成")
             .to_string();
         let warnings = raw
             .get("warnings")
@@ -431,7 +525,6 @@ fn run_scheduler(
             })
             .unwrap_or_default();
 
-        // 把结果文件复制到用户选的输出目录
         let mut output_xlsx = None;
         let mut output_pdf = None;
         if code != 2 {
@@ -458,11 +551,18 @@ fn run_scheduler(
             output_xlsx,
             output_pdf,
         }
-    } else if !engine_ok {
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
+    } else if !exit_status.map(|s| s.success()).unwrap_or(false) {
+        let stderr_str = String::from_utf8_lossy(&stderr);
+        let friendly = if stderr_str.contains("input.xlsx") || stderr_str.contains("No such file") {
+            "输入文件格式不对，请检查 Excel 是否包含所需数据".to_string()
+        } else if stderr_str.contains("MemoryError") || stderr_str.contains("Memory") {
+            "排课引擎内存不足，请减少班级或课程数量后重试".to_string()
+        } else {
+            format!("排课引擎出错，请检查输入文件后重试（{}）", stderr_str.trim().chars().take(100).collect::<String>())
+        };
         SchedulerResult {
             code: 2,
-            message: format!("引擎异常退出: {}", stderr.trim()),
+            message: friendly,
             warnings: vec![],
             plans: vec![],
             output_xlsx: None,
@@ -471,7 +571,7 @@ fn run_scheduler(
     } else {
         SchedulerResult {
             code: 2,
-            message: "引擎未生成 status.json".to_string(),
+            message: "排课引擎未返回结果，请重试".to_string(),
             warnings: vec![],
             plans: vec![],
             output_xlsx: None,
@@ -479,7 +579,6 @@ fn run_scheduler(
         }
     };
 
-    // 清理临时工作目录
     let _ = fs::remove_dir_all(&work_dir);
 
     Ok(result)
@@ -491,6 +590,17 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // 启动时清理 7 天前的临时任务目录
+            cleanup_old_temp_dirs();
+
+            // 恢复主窗口大小和位置
+            if let Some(main) = app.get_webview_window("main") {
+                if let Some(ws) = load_config().window_state {
+                    let _ = main.set_size(tauri::LogicalSize::new(ws.width, ws.height));
+                    let _ = main.set_position(tauri::LogicalPosition::new(ws.x, ws.y));
+                }
+            }
+
             // ---- 托盘菜单 ----
             let show_item = MenuItem::with_id(app, "show", "打开主面板", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
@@ -573,7 +683,10 @@ fn main() {
             open_path,
             open_settings,
             show_main,
-            quit_app
+            quit_app,
+            show_tutorial,
+            get_file_info,
+            save_window_state
         ])
         .run(tauri::generate_context!())
         .expect("排课助手启动失败");

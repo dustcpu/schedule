@@ -118,6 +118,7 @@
         <p><strong>排课助手</strong> v0.1.0</p>
         <p>作者：Dust.</p>
         <p>本程序完全离线运行，不上传任何数据。</p>
+        <button id="btn-show-tutorial" class="ghost-btn" style="margin-top:8px;">📖 重新查看新手教程</button>
       </div>
     </section>
 
@@ -285,6 +286,11 @@
       cfg.hard_limits.fixed_classes.push({ day: 1, period: 1, subject: '', note: '' });
       renderFixedList();
       save();
+    };
+
+    $('btn-show-tutorial').onclick = async () => {
+      await invoke('show_tutorial');
+      await window.__TAURI__.window.getCurrentWindow().hide();
     };
 
     $('btn-back').onclick = async () => {
