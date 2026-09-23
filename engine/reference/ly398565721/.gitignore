@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Node / Codex runtime links
+node_modules/
+
+# macOS
+.DS_Store
+
+# Run-specific, private school data and generated results
+runs/
+artifacts/
+outputs/
+*.xlsx
+*.xls
+*.csv
+*.json
+!examples/**/*.json
+
+# Credentials and local settings
+.env
+.env.*
+.codex/
