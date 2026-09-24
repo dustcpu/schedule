@@ -24,6 +24,8 @@ struct Config {
     hard_limits: HardLimits,
     /// 窗口状态（大小和位置，启动时恢复）
     window_state: Option<WindowState>,
+    /// 上次使用的输入文件路径
+    last_input_file: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -44,6 +46,9 @@ struct HardLimits {
     classes: ClassRule,
     /// 连堂规则
     consecutive: ConsecutiveRule,
+    /// 额外硬约束（教务老师手动输入，传给引擎）
+    #[serde(default)]
+    extra_constraints: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -89,7 +94,12 @@ struct ConsecutiveRule {
     chinese_day: i32,
     english_day: i32,
     rule: String,
+    /// 仅语数英允许连堂（其他学科连堂节数强制为0）
+    #[serde(default = "default_true")]
+    only_core_subjects: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
@@ -144,9 +154,12 @@ impl Default for Config {
                     chinese_day: 3,
                     english_day: 4,
                     rule: "老师一般带2个班，一个班上午1-2节，另一个班上午4-5节".to_string(),
+                    only_core_subjects: true,
                 },
+                extra_constraints: "".to_string(),
             },
             window_state: None,
+            last_input_file: None,
         }
     }
 }
@@ -276,7 +289,8 @@ fn generate_task_id() -> String {
 
 /// 找排课引擎：
 /// 1) 发布模式：resource_dir/engine/engine.exe（sidecar）
-/// 2) 开发模式：CARGO_MANIFEST_DIR/../engine/mock_engine.py，用 python 解释器跑
+/// 2) 开发模式：优先 CARGO_MANIFEST_DIR/../engine/engine.py（真引擎），
+///    找不到再 fallback 到 mock_engine.py
 fn build_engine_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>), String> {
     // 发布模式 sidecar
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -285,21 +299,28 @@ fn build_engine_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>),
             return Ok((sidecar.to_string_lossy().to_string(), vec![]));
         }
     }
-    // 开发模式 mock
+    // 开发模式：优先真引擎 engine.py
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let engine_script = Path::new(manifest_dir).join("../engine/engine.py");
     let mock_script = Path::new(manifest_dir).join("../engine/mock_engine.py");
-    if mock_script.exists() {
-        for py in ["python", "py"] {
-            if Command::new(py).arg("--version").output().is_ok() {
-                return Ok((
-                    py.to_string(),
-                    vec![mock_script.to_string_lossy().to_string()],
-                ));
-            }
+
+    let script = if engine_script.exists() {
+        engine_script
+    } else if mock_script.exists() {
+        mock_script
+    } else {
+        return Err("未找到排课引擎（engine.exe / engine.py / mock_engine.py）".to_string());
+    };
+
+    for py in ["python", "py"] {
+        if Command::new(py).arg("--version").output().is_ok() {
+            return Ok((
+                py.to_string(),
+                vec![script.to_string_lossy().to_string()],
+            ));
         }
-        return Err("未找到 Python，请先安装 Python 并加入 PATH".to_string());
     }
-    Err("未找到排课引擎（engine.exe 或 mock_engine.py）".to_string())
+    Err("未找到 Python，请先安装 Python 并加入 PATH".to_string())
 }
 
 // ==================== Tauri 命令 ====================
@@ -381,6 +402,31 @@ fn show_tutorial(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn download_template(app: tauri::AppHandle, format: Option<String>) -> Result<(), String> {
+    let fmt = format.unwrap_or_else(|| "old".to_string());
+    let (src_name, save_name) = if fmt == "new" {
+        ("input_template_new.xlsx", "排课输入模板-新格式.xlsx")
+    } else {
+        ("input_template.xlsx", "排课输入模板.xlsx")
+    };
+
+    let save_path = app
+        .dialog()
+        .file()
+        .set_file_name(save_name)
+        .add_filter("Excel 文件", &["xlsx"])
+        .blocking_save_file()
+        .ok_or_else(|| "已取消".to_string())?;
+
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let template_path = resource_dir.join("resources").join(src_name);
+    let data = fs::read(&template_path).map_err(|e| format!("读取模板失败: {}", e))?;
+    let save_path = save_path.as_path().ok_or("无效的保存路径")?;
+    fs::write(save_path, data).map_err(|e| format!("保存模板失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
 fn run_scheduler(
     app: tauri::AppHandle,
     input_path: String,
@@ -402,6 +448,13 @@ fn run_scheduler(
         fs::create_dir_all(out).map_err(|_| "输出目录不存在，且无法创建".to_string())?;
     }
 
+    // 保存上次使用的输入文件
+    {
+        let mut cfg = load_config();
+        cfg.last_input_file = Some(input_path.clone());
+        let _ = save_config(&cfg);
+    }
+
     let task_id = generate_task_id();
     let work_dir = temp_work_dir().join(&task_id);
     let in_dir = work_dir.join("input");
@@ -417,8 +470,15 @@ fn run_scheduler(
     let dest_input = in_dir.join(format!("input.{}", ext));
     fs::copy(&input_path, &dest_input).map_err(|e| format!("复制输入文件失败: {}", e))?;
 
-    // 写 requirements.txt
-    fs::write(in_dir.join("requirements.txt"), requirements)
+    // 写 requirements.txt（用户特殊要求 + 额外硬约束）
+    let cfg = load_config();
+    let extra = &cfg.hard_limits.extra_constraints;
+    let full_requirements = if extra.trim().is_empty() {
+        requirements
+    } else {
+        format!("{}\n\n=== 额外硬约束 ===\n{}", requirements, extra)
+    };
+    fs::write(in_dir.join("requirements.txt"), full_requirements)
         .map_err(|e| format!("写入要求文件失败: {}", e))?;
 
     // 写 hard_limits.json
@@ -685,6 +745,7 @@ fn main() {
             show_main,
             quit_app,
             show_tutorial,
+            download_template,
             get_file_info,
             save_window_state
         ])

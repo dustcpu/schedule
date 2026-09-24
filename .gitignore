@@ -23,6 +23,10 @@ output/
 *.pdf
 !engine/*.xlsx
 !engine/*.pdf
+!engine/test_input*/**/*.xlsx
+!engine/test_input*/**/*.pdf
+!src-tauri/resources/*.xlsx
+!src-tauri/resources/*.pdf
 
 # 系统 / 编辑器
 .DS_Store

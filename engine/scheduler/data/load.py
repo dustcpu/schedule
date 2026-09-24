@@ -251,6 +251,17 @@ def _post_process(p: Problem) -> None:
     cfg = p.config
     grid = cfg.grid_size()
 
+    # 仅语数英允许连堂：强制其他学科 block_len=0
+    if cfg.consecutive.only_core_subjects:
+        core = set(cfg.consecutive.subjects)
+        for c in p.courses:
+            if c.subject not in core and c.block_len > 0:
+                p.warnings.append(
+                    f"班级 {c.class_id} 的「{c.subject}」设置了连堂，但已开启"
+                    f"「仅语数英允许连堂」，已自动改为普通课时"
+                )
+                c.block_len = 0
+
     # 单双周提示（v1 内核按每周排，R5 待拍板）
     alt = [c for c in p.courses if c.week_mode not in ("每周", "", None)]
     if alt:
