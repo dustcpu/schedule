@@ -102,6 +102,8 @@ class ConsecutiveRule:
     blocks_per_day: int = 1  # 每班每天连堂块数（方向共识：一个班一块，另一班错开）
     # 连堂块允许起始节次（默认上午内 1-4，即 1-2/2-3/3-4/4-5）
     allow_start_periods: List[int] = field(default_factory=lambda: [1, 2, 3, 4])
+    # 仅语数英允许连堂（其他学科即使填了连堂节数也强制为0，且禁止相邻排课）
+    only_core_subjects: bool = True
 
     def day_of(self, subject: str) -> Optional[int]:
         """返回该学科的连堂日（1-based），非连堂学科返回 None。"""
@@ -148,6 +150,7 @@ def consecutive_from_dict(d: Dict[str, Any], base: ConsecutiveRule) -> Consecuti
         "block_len": base.block_len,
         "blocks_per_day": base.blocks_per_day,
         "allow_start_periods": list(base.allow_start_periods),
+        "only_core_subjects": base.only_core_subjects,
     })
     if not isinstance(d, dict):
         return c
@@ -157,6 +160,8 @@ def consecutive_from_dict(d: Dict[str, Any], base: ConsecutiveRule) -> Consecuti
                 setattr(c, k, int(d[k]))
             except (TypeError, ValueError):
                 pass
+    if d.get("only_core_subjects") is not None:
+        c.only_core_subjects = bool(d["only_core_subjects"])
     if isinstance(d.get("subjects"), list):
         c.subjects = [str(x).strip() for x in d["subjects"] if str(x).strip()]
     return c

@@ -141,6 +141,17 @@ def build_model(p: Problem) -> ModelBundle:
             else:
                 model.Add(x[(cid, s, day, per)] == 0)
 
+    # ---------- H5b 非连堂学科禁止相邻排课 ----------
+    # 对于 block_len <= 1 的学科（自习除外），同一天内不能排在相邻节次（杜绝"伪连堂"）
+    for (cid, s), blen in block_len_of.items():
+        if blen > 1:
+            continue  # 连堂学科由 H5 处理
+        if s == SELF_STUDY:
+            continue  # 自习允许连续
+        for d in days:
+            for per in range(1, n_per):  # per 和 per+1 相邻
+                model.Add(x[(cid, s, d, per)] + x[(cid, s, d, per + 1)] <= 1)
+
     # ---------- 软约束 ----------
     terms: List[Tuple[int, Any]] = []
     w = cfg.soft

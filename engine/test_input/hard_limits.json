@@ -1,0 +1,54 @@
+{
+  "schedule": {
+    "periods_per_day": 8,
+    "period_minutes": 40,
+    "morning_start": "08:00",
+    "morning_end": "12:20",
+    "afternoon_start": "14:30",
+    "afternoon_end": "16:55",
+    "long_break_after_period": 3,
+    "long_break_minutes": 30,
+    "eye_break_after_period": 6,
+    "eye_break_minutes": 15,
+    "default_break_minutes": 10
+  },
+  "fixed_classes": [
+    {
+      "day": 1,
+      "period": 1,
+      "subject": "班会",
+      "note": ""
+    },
+    {
+      "day": 1,
+      "period": 8,
+      "subject": "研究性学习",
+      "note": ""
+    },
+    {
+      "day": 4,
+      "period": 8,
+      "subject": "校本课",
+      "note": ""
+    }
+  ],
+  "classes": {
+    "total_classes": 4,
+    "arts_start": 1,
+    "arts_end": 0,
+    "science_start": 1,
+    "science_end": 4,
+    "gaokao_policy": "新高考3+1+2"
+  },
+  "consecutive": {
+    "subjects": [
+      "语文",
+      "数学",
+      "英语"
+    ],
+    "math_day": 2,
+    "chinese_day": 3,
+    "english_day": 4,
+    "rule": ""
+  }
+}

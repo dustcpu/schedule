@@ -1,57 +1,138 @@
 # 排课助手
 
-> 版本：v0.1.0
+> 版本：v0.1.3
 > 作者：Dust.
-> 技术栈：Tauri 2（Rust + 原生 HTML/CSS/JS）+ Python 排课引擎
+> 技术栈：Tauri 2（Rust + 原生 HTML/CSS/JS）+ Python 排课引擎（OR-Tools CP-SAT）
 
-一个 Win11 桌面端排课工具外壳。用户上传 Excel 数据、填写特殊要求，
-外壳调用排课引擎，输出 Excel + PDF 课表。全程离线运行，不联网、不上传数据。
+一个 Win11 桌面端排课工具。教务老师上传 Excel 数据、填写特殊要求，软件调用排课引擎，输出 Excel + PDF 课表。全程离线运行，不联网、不上传数据。
+
+---
+
+## 功能特性
+
+- **多解输出**：一次排课生成 3-8 套方案，每套带评分和特点说明，教务老师可对比选择
+- **硬限制预设**：内置高二作息时间、固定课程（班会/研究性学习/校本课）、连堂规则等，可在设置中查看和修改
+- **仅语数英连堂**：默认开启，其他学科禁止连堂（包括禁止相邻排课形成"伪连堂"）
+- **额外硬约束**：设置页可输入更多约定好的硬约束，自动传给排课引擎
+- **模板下载**：内置输入模板（新格式含教师职务、班级选科、固定课示例），一键下载
+- **新手引导**：首次打开自动弹出操作教程，设置页可重新查看
+- **系统托盘**：关闭窗口最小化到托盘，可在设置中改为直接退出
+- **特殊要求自动保存**：关闭软件后下次打开仍保留已填写的特殊要求
+- **完全离线**：不联网、不上传数据、不读取无关文件
 
 ---
 
 ## 快速开始
 
-详细编译步骤见 [安装说明.md](./安装说明.md)。
+### 下载安装
 
-**开发模式**：
+从 [Releases](https://github.com/dustcpu/schedule/releases) 下载最新安装包，双击安装即可。
+
+### 开发模式
+
+详细环境准备见 [docs/安装说明.md](./docs/安装说明.md)。
+
 ```bash
 cd src-tauri
 cargo run
 ```
 
-**打包发布**：
+或 Windows 一键启动：
+
+```bash
+启动-开发.bat
+```
+
+### 打包发布
+
 ```bash
 cd src-tauri
 cargo tauri build
 ```
+
+安装包输出到 `src-tauri/target/release/bundle/nsis/`。
 
 ---
 
 ## 目录结构
 
 ```
-排课助手-github/
-├── README.md              # 本文件
-├── 安装说明.md            # 团队编译/环境准备
-├── 接口协议.md            # 外壳 ↔ 引擎的调用约定（算法同学必读）
-├── 排课约束目录.md        # 排课约束规格（H/S/D/O/G），engine.py 的实现依据
-├── 启动-开发.bat          # Windows 一键启动开发模式
+schedule/
+├── README.md                    # 本文件
+├── 启动-开发.bat                # Windows 一键启动开发模式
 ├── .gitignore
-├── src-tauri/             # Rust 外壳
+├── docs/                        # 文档
+│   ├── 接口协议.md              # 外壳 ↔ 引擎的调用约定（算法同学必读）
+│   ├── 排课约束目录.md          # 排课约束规格（H/S/D/O/G）
+│   └── 安装说明.md              # 团队编译/环境准备
+├── src-tauri/                   # Rust 外壳
 │   ├── Cargo.toml
 │   ├── build.rs
 │   ├── tauri.conf.json
-│   ├── src/main.rs        # 托盘、配置、sidecar 调用
-│   └── icons/icon.ico
-├── ui/                    # 前端（原生 HTML/CSS/JS，无框架）
-│   ├── index.html         # 主面板
-│   ├── settings.html      # 设置页
+│   ├── src/main.rs              # 托盘、配置、sidecar 调用、窗口事件
+│   ├── icons/icon.ico
+│   └── resources/               # 内置资源
+│       ├── input_template.xlsx      # 旧格式输入模板
+│       └── input_template_new.xlsx  # 新格式输入模板（推荐）
+├── ui/                          # 前端（原生 HTML/CSS/JS，无框架）
+│   ├── index.html               # 主面板
+│   ├── settings.html            # 设置页
 │   └── style.css
-└── engine/                # 算法引擎
-    ├── mock_engine.py     # 开发占位引擎（真正算法同学替换成 engine.exe）
-    └── reference/         # 参考求解器（OR-Tools CP-SAT，MIT）
-        └── ly398565721/   # 算法种子：建模 + 独立校验 + 测试
+└── engine/                      # 算法引擎（Python）
+    ├── engine.py                # 引擎入口
+    ├── mock_engine.py           # 开发占位引擎
+    ├── make_sample_input.py     # 生成示例输入
+    ├── verify_hard.py           # 硬约束校验工具
+    ├── input_template.md        # 输入格式说明
+    ├── scheduler/               # 引擎核心
+    │   ├── config.py            # 配置层（作息/固定课/连堂规则）
+    │   ├── export.py            # 导出层（xlsx/pdf/status.json）
+    │   ├── data/
+    │   │   ├── load.py          # 数据加载（input.xlsx 解析）
+    │   │   └── validate.py      # 数据校验
+    │   └── solver/
+    │       ├── model.py         # CP-SAT 建模（H1-H7 硬约束 + 软约束）
+    │       └── solve.py         # 求解器（多解枚举）
+    ├── test_input/              # 4班测试输入
+    ├── test_input_25/           # 25班测试输入
+    └── reference/               # 参考资料
+        └── ly398565721/         # OR-Tools CP-SAT 参考项目
 ```
+
+---
+
+## 输入格式
+
+`input.xlsx` 包含三个 sheet：
+
+### Sheet「教师」
+| 列名 | 说明 |
+|------|------|
+| 教师ID | 唯一编号 |
+| 任教学科 | 如：语文、数学、物理 |
+| 教师姓名 | 显示用 |
+| 职务 | 可选：班主任、年级主任等 |
+
+### Sheet「班级」
+| 列名 | 说明 |
+|------|------|
+| 班级ID | 唯一编号，如 C01 |
+| 班级名称 | 如：高二(1)班 |
+| 年级 | 如：高二 |
+| 班主任 | 班主任姓名 |
+| 选科 | 精细到三门，如：物化生、政史地、物化地 |
+
+### Sheet「课程」
+| 列名 | 说明 |
+|------|------|
+| 班级ID | 对应班级表 |
+| 学科 | 如：语文、物理、班会 |
+| 教师ID | 对应教师表，固定课可留空 |
+| 周课时 | 每周节数 |
+| 连堂节数 | 0=不连堂，2=两节连堂（仅语数英可设2） |
+| 单双周 | 每周/单周/双周（v1 暂按每周排） |
+
+> 固定课（班会/研究性学习/校本课）需在课程表中填行，教师ID可留空。
 
 ---
 
@@ -61,22 +142,45 @@ cargo tauri build
 用户在界面上选 input.xlsx + 填特殊要求 + 选输出目录
                     ↓
 排课助手.exe（外壳）
-                    ↓ 调用 engine.exe <输入目录> <输出目录> <任务ID>
-              算法引擎（Python）
+  ├─ 写 hard_limits.json（作息/固定课/连堂规则/额外硬约束）
+  ├─ 写 requirements.txt（特殊要求 + 额外硬约束）
+  └─ 调用 engine.py <输入目录> <输出目录> <任务ID>
+                    ↓
+              算法引擎（Python + OR-Tools CP-SAT）
+  ├─ H1 每格唯一  H2 周课时  H3 教师冲突
+  ├─ H4 固定课    H5 连堂    H5b 非连堂学科禁止相邻
+  └─ 软约束加权（主科分散/体育不排首末/教师均衡/首节主科/自习后置）
                     ↓ 输出
 result.xlsx（多 sheet：总览 + 方案1/2/3...）
 result.pdf（多页：总览 + 每个方案一页课表）
-status.json（含 plans 数组，3-8 套多解）
+status.json（含 plans 数组，3-8 套多解，每套带评分和特点）
 ```
 
-详细接口约定见 [接口协议.md](./接口协议.md)。
+详细接口约定见 [docs/接口协议.md](./docs/接口协议.md)。
+
+---
+
+## 硬约束说明
+
+| 编号 | 约束 | 说明 |
+|------|------|------|
+| H1 | 每格唯一 | 每班每天每节恰好排一门课 |
+| H2 | 周课时 | 每班每科节数等于输入需求 |
+| H3 | 教师冲突 | 同一教师同一天同一节最多带1个班 |
+| H4 | 固定课 | 班会/研究性学习/校本课固定在指定节次 |
+| H5 | 连堂 | 语数英在连堂日排连续块（默认周二数学/周三语文/周四英语） |
+| H5b | 非连堂禁止相邻 | 其他学科不能排在相邻节次（杜绝伪连堂） |
+| H6 | 分科 | 由输入的选科决定各班学科集合 |
+| H7 | 作息 | 节次→时钟由配置计算 |
+
+软约束：主科分散、体育不排首末、教师日均均衡、首节主科、自习后置。
 
 ---
 
 ## 配置与数据位置
 
 - 配置：`%APPDATA%\排课助手\config.json`
-- 临时工作目录：`%APPDATA%\排课助手\temp\`
+- 临时工作目录：`%APPDATA%\排课助手\temp\`（自动清理7天前文件）
 - 用户的输入/输出文件：完全由用户在界面上自选路径，软件不私自存副本
 
 ---
@@ -91,8 +195,9 @@ status.json（含 plans 数组，3-8 套多解）
 
 ---
 
-## 分支 / 协作说明
+## 协作说明
 
 - `main`：稳定版
-- 算法引擎同学：按 `接口协议.md`（调用约定）+ `排课约束目录.md`（约束规格）实现 `engine.py`，参考 `engine/reference/ly398565721/` 的 CP-SAT 建模，产出 `engine.exe` 放到 `src-tauri/resources/engine/`
-- UI 同学：改 `ui/` 目录的 HTML/CSS，或 `src-tauri/src/main.rs`
+- **算法同学**：按 [docs/接口协议.md](./docs/接口协议.md)（调用约定）+ [docs/排课约束目录.md](./docs/排课约束目录.md)（约束规格）实现 `engine/`，参考 `engine/reference/ly398565721/` 的 CP-SAT 建模
+- **UI 同学**：改 `ui/` 目录的 HTML/CSS，或 `src-tauri/src/main.rs`
+- 提交前请用 `engine/test_input_25/` 跑一次完整测试，确认5套方案都生成且无硬约束违反

@@ -109,6 +109,20 @@
           <label>连堂说明</label>
           <input type="text" id="hl-consec-rule">
         </div>
+        <div class="hl-field" style="margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="hl-only-core" style="width:auto;">
+            <span>仅语数英允许连堂（其他学科连堂节数强制为0）</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="hl-group">
+        <h3>额外硬约束</h3>
+        <div class="hl-field">
+          <label>其他约定好的硬约束（可选，会传给排课引擎）</label>
+          <textarea id="hl-extra-constraints" placeholder="例如：&#10;· 高三年级不排连堂课&#10;· 体育老师每周最多12节课&#10;· 周三下午全体教师教研活动" style="width:100%;min-height:80px;border:1px solid #d1d5db;border-radius:6px;padding:8px;font-size:13px;font-family:inherit;resize:vertical;"></textarea>
+        </div>
       </div>
     </section>
 
@@ -204,6 +218,11 @@
       $('hl-chinese-day').value = c.chinese_day;
       $('hl-english-day').value = c.english_day;
       $('hl-consec-rule').value = c.rule;
+      $('hl-only-core').checked = c.only_core_subjects !== false;
+    }
+
+    function fillExtra() {
+      $('hl-extra-constraints').value = cfg.hard_limits.extra_constraints || '';
     }
 
     function collectSchedule() {
@@ -237,6 +256,11 @@
       c.chinese_day = +$('hl-chinese-day').value;
       c.english_day = +$('hl-english-day').value;
       c.rule = $('hl-consec-rule').value;
+      c.only_core_subjects = $('hl-only-core').checked;
+    }
+
+    function collectExtra() {
+      cfg.hard_limits.extra_constraints = $('hl-extra-constraints').value;
     }
 
     async function load() {
@@ -249,12 +273,14 @@
       renderFixedList();
       fillClasses();
       fillConsec();
+      fillExtra();
     }
 
     async function save() {
       collectSchedule();
       collectClasses();
       collectConsec();
+      collectExtra();
       cfg.close_to_tray = document.querySelector(
         'input[name="close-behavior"]:checked'
       ).value === 'tray';
@@ -278,8 +304,12 @@
     ['hl-periods','hl-period-min','hl-am-start','hl-am-end','hl-pm-start','hl-pm-end',
      'hl-long-after','hl-long-min','hl-eye-after','hl-eye-min','hl-break-min',
      'hl-total','hl-policy','hl-arts-start','hl-arts-end','hl-sci-start','hl-sci-end',
-     'hl-math-day','hl-chinese-day','hl-english-day','hl-consec-rule'].forEach(id => {
+     'hl-math-day','hl-chinese-day','hl-english-day','hl-consec-rule',
+     'hl-only-core','hl-extra-constraints'].forEach(id => {
       $(id).onchange = save;
+      if (id === 'hl-extra-constraints') {
+        $(id).addEventListener('input', save);
+      }
     });
 
     $('btn-add-fixed').onclick = () => {

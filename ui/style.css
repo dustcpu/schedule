@@ -41,34 +41,7 @@ header h1 {
   font-weight: 600;
 }
 
-/* 年级切换栏 */
-.grade-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.grade-tab {
-  flex: 1;
-  padding: 10px 0;
-  border: 1px solid var(--border);
-  background: var(--card);
-  color: var(--text-dim);
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.grade-tab:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-.grade-tab.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: #fff;
-  font-weight: 600;
-}
+/* 年级切换栏（已移除，保留占位） */
 
 main {
   flex: 1;
@@ -305,13 +278,21 @@ textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
   gap: 6px;
 }
 .plan-item {
+  background: #f9fafb;
+  border-radius: 6px;
+  font-size: 13px;
+  overflow: hidden;
+  transition: background 0.15s;
+}
+.plan-item:hover {
+  background: #f3f4f6;
+}
+.plan-item-header {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  background: #f9fafb;
-  border-radius: 6px;
-  font-size: 13px;
+  cursor: pointer;
 }
 .plan-badge {
   background: var(--primary);
@@ -328,10 +309,39 @@ textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
   color: var(--primary);
   font-weight: 600;
 }
-.plan-note {
+.plan-expand {
+  margin-left: auto;
   color: var(--text-dim);
   font-size: 12px;
-  flex: 1;
+}
+.plan-item-detail {
+  padding: 0 10px 10px 10px;
+  border-top: 1px solid #e5e7eb;
+  margin-top: -1px;
+}
+.plan-item-detail.hidden { display: none; }
+.plan-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.metric-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.metric-label {
+  color: var(--text-dim);
+}
+.metric-value {
+  color: var(--primary);
+  font-weight: 600;
 }
 
 /* 文件卡片 */
