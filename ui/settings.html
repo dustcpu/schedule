@@ -129,10 +129,14 @@
     <section class="card">
       <div class="step">关于</div>
       <div class="about">
-        <p><strong>排课助手</strong> v0.1.0</p>
+        <p><strong>排课助手</strong> <span id="app-version">v0.1.3</span></p>
         <p>作者：Dust.</p>
         <p>本程序完全离线运行，不上传任何数据。</p>
-        <button id="btn-show-tutorial" class="ghost-btn" style="margin-top:8px;">📖 重新查看新手教程</button>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <button id="btn-check-update" class="ghost-btn">🔄 检查更新</button>
+          <button id="btn-show-tutorial" class="ghost-btn">📖 重新查看新手教程</button>
+        </div>
+        <div id="update-result" style="margin-top:8px;font-size:13px;"></div>
       </div>
     </section>
 

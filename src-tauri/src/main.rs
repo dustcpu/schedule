@@ -238,6 +238,44 @@ fn get_file_info(path: String) -> FileInfo {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct ValidateResult {
+    valid: bool,
+    errors: Vec<String>,
+    warnings: Vec<String>,
+    stats: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[tauri::command]
+fn validate_input(path: String) -> ValidateResult {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let script = Path::new(manifest_dir).join("../engine/validate_input.py");
+    let output = Command::new("python")
+        .arg(&script)
+        .arg(&path)
+        .output();
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            match serde_json::from_str::<ValidateResult>(&stdout) {
+                Ok(r) => r,
+                Err(_) => ValidateResult {
+                    valid: false,
+                    errors: vec![format!("校验脚本输出解析失败: {}", stdout.lines().last().unwrap_or(""))],
+                    warnings: vec![],
+                    stats: std::collections::HashMap::new(),
+                },
+            }
+        }
+        Err(e) => ValidateResult {
+            valid: false,
+            errors: vec![format!("无法运行校验脚本: {}", e)],
+            warnings: vec![],
+            stats: std::collections::HashMap::new(),
+        },
+    }
+}
+
 #[tauri::command]
 fn save_window_state(x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
     let mut cfg = load_config();
@@ -747,7 +785,8 @@ fn main() {
             show_tutorial,
             download_template,
             get_file_info,
-            save_window_state
+            save_window_state,
+            validate_input
         ])
         .run(tauri::generate_context!())
         .expect("排课助手启动失败");
