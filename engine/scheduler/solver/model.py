@@ -158,6 +158,34 @@ def build_model(p: Problem) -> ModelBundle:
             for per in range(1, n_per):  # per 和 per+1 相邻
                 model.Add(x[(cid, s, d, per)] + x[(cid, s, d, per + 1)] <= 1)
 
+    # ---------- H5c 连堂学科：非指定日每天至多 cap 节 ----------
+    # 规格：周课时扣掉连堂块之后，余下的节数应在其余各天均匀铺开，
+    # 使课表呈"每天一节 + 指定日连堂"，而不是挤在少数几天。
+    #
+    # cap 按周课时推算，保证永远可行：
+    #   cap = ceil((周课时 - 连堂块节数) / 非指定日天数)
+    #   周课时 6、连堂 2、其余 4 天  -> cap = 1（每天恰好一节）
+    #   周课时 7、连堂 2、其余 4 天  -> cap = 2（否则无解，故自动放宽并告警）
+    for (cid, s), blen in block_len_of.items():
+        if blen <= 1:
+            continue
+        desig = consec.day_of(s)
+        if desig is None:
+            continue  # 非连堂规则内的学科，H5 已告警并按普通课时处理
+        other_days = [d for d in days if d != desig]
+        if not other_days:
+            continue
+        rest = req[(cid, s)] - blen
+        cap = max(1, math.ceil(rest / len(other_days)))
+        if cap > 1:
+            warnings.append(
+                f"班级 {cid} 的「{s}」周课时 {req[(cid, s)]} 节，"
+                f"扣除连堂 {blen} 节后仍有 {rest} 节，"
+                f"无法做到其余每天至多 1 节（已放宽为每天至多 {cap} 节）"
+            )
+        for d in other_days:
+            model.Add(sum(x[(cid, s, d, per)] for per in periods) <= cap)
+
     # ---------- 软约束 ----------
     terms: List[Tuple[int, Any]] = []
     w = cfg.soft
