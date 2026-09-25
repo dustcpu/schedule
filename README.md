@@ -204,3 +204,15 @@ status.json（含 plans 数组，3-8 套多解，每套带评分和特点）
 - **算法同学**：按 [docs/接口协议.md](./docs/接口协议.md)（调用约定）+ [docs/排课约束目录.md](./docs/排课约束目录.md)（约束规格）实现 `engine/`，参考 `engine/reference/ly398565721/` 的 CP-SAT 建模
 - **UI 同学**：改 `ui/` 目录的 HTML/CSS，或 `src-tauri/src/main.rs`
 - 提交前请用 `engine/test_input_25/` 跑一次完整测试，确认5套方案都生成且无硬约束违反
+
+### 提交信息规范
+
+- **语言**：简体中文。
+- **格式**：沿用 `type: 描述` 风格（`feat` / `fix` / `docs` / `chore` / `release` / `refactor`）。
+- **禁止添加 AI 署名**。不要写 `Co-Authored-By: Claude <noreply@anthropic.com>`
+  这类 trailer —— GitHub 会把它解析成**共同作者**，导致非团队成员出现在
+  提交页面与贡献者列表中。使用 AI 辅助工具是正常的，但署名只写实际提交人。
+- 推送前先更新 [CHANGELOG.md](./CHANGELOG.md)。
+
+> 说明：仓库历史中曾有 11 个提交带有此类署名，已于 2026-09-26 通过改写历史清除。
+> 本规范自 2026-09-26 起执行。
