@@ -27,6 +27,8 @@ output/
 !engine/test_input*/**/*.pdf
 !src-tauri/resources/*.xlsx
 !src-tauri/resources/*.pdf
+# 参考资料里的论文 PDF 需要入库（否则被上面的 *.pdf 挡掉）
+!参考资料/pdf/*.pdf
 
 # 系统 / 编辑器
 .DS_Store
