@@ -59,6 +59,7 @@ cargo tauri build
 ```
 schedule/
 ├── README.md                    # 本文件
+├── CHANGELOG.md                 # 更新日志（★ 每次推送前更新）
 ├── 启动-开发.bat                # Windows 一键启动开发模式
 ├── .gitignore
 ├── docs/                        # 文档
@@ -78,6 +79,8 @@ schedule/
 │   ├── index.html               # 主面板
 │   ├── settings.html            # 设置页
 │   └── style.css
+├── 参考资料/                    # 排课算法文献（13 篇论文 PDF + 索引 + 付费墙清单）
+├── 测试存档/                    # 历史测试结果与分析（每次测试一个日期目录）
 └── engine/                      # 算法引擎（Python）
     ├── engine.py                # 引擎入口
     ├── mock_engine.py           # 开发占位引擎
