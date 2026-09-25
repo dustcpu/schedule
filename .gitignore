@@ -29,9 +29,8 @@ output/
 !src-tauri/resources/*.pdf
 # 参考资料里的论文 PDF 需要入库（否则被上面的 *.pdf 挡掉）
 !参考资料/pdf/*.pdf
-# 测试存档里的课表（xlsx/pdf）作为测试记录入库
+# 测试存档只保留课表 xlsx（不保留 pdf，故 pdf 仍被上面的 *.pdf 挡住）
 !测试存档/**/*.xlsx
-!测试存档/**/*.pdf
 
 # 系统 / 编辑器
 .DS_Store
