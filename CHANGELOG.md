@@ -16,14 +16,17 @@
 
 | 位置 | 当前值 | 说明 |
 |---|---|---|
-| `src-tauri/tauri.conf.json` | `0.1.3` | 安装包版本（外壳） |
-| `src-tauri/Cargo.toml` | `0.1.3` | Rust 包版本 |
-| `README.md` | `v0.1.3` | 文档头部 |
+| `src-tauri/tauri.conf.json` | `0.1.4` | 安装包版本（外壳） |
+| `src-tauri/Cargo.toml` | `0.1.4` | Rust 包版本 |
+| `src-tauri/Cargo.lock` | `0.1.4` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
+| `README.md` | `v0.1.4` | 文档头部 |
 | `engine/scheduler/__init__.py` | **`0.1.0`** | 引擎独立版本号 ⚠️ 与外壳不同步，待统一 |
 
 ---
 
-## [未发布]
+## [v0.1.4] - 2026-09-26
+
+> **本版修复连堂（走班/连堂规则）的两处实现缺陷。**
 
 ### 新增
 - **测试存档目录 `测试存档/`**：记录每次测试的结果与分析，含 `README.md` 索引与命名约定。
