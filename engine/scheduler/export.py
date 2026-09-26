@@ -50,7 +50,9 @@ def register_font() -> str:
 
 # ---------------------------------------------------------------- 课表网格
 def _grid_rows(plan: Plan, ci, cfg) -> List[List[str]]:
-    """生成某班课表的二维表（含表头）。"""
+    """生成某班课表的二维表（含表头）。
+    体育活动不参与排课决策，固定附加在每天第8节之后作为第9节。
+    """
     labels = cfg.period_labels()
     rows: List[List[str]] = [["时间"] + DAYS]
     for per in cfg.periods():
@@ -58,6 +60,8 @@ def _grid_rows(plan: Plan, ci, cfg) -> List[List[str]]:
         for d in range(1, NUM_DAYS + 1):
             row.append(plan.grid.get((ci.id, d, per), ""))
         rows.append(row)
+    # 附加第9节：体育活动（固定，不参与排课）
+    rows.append(["第9节 17:05-17:45"] + ["体育活动"] * NUM_DAYS)
     return rows
 
 
@@ -96,7 +100,9 @@ def write_xlsx(path: str, plans: List[Plan], problem: Problem) -> None:
         w = wb.create_sheet(f"方案{p.index}")
         r = 1
         for ci in problem.classes:
-            title = w.cell(row=r, column=1, value=f"{ci.name or ci.id}　（{ci.track or '—'}）")
+            suffix = ci.elective or ci.track
+            title_text = f"{ci.name or ci.id}　（{suffix}）" if suffix else (ci.name or ci.id)
+            title = w.cell(row=r, column=1, value=title_text)
             title.font = Font(bold=True, size=12)
             r += 1
             rows = _grid_rows(p, ci, cfg)
@@ -172,7 +178,9 @@ def write_pdf(path: str, task_id: str, plans: List[Plan], problem: Problem,
                                    title_style))
             story.append(Spacer(1, 4 * mm))
             for c in group:
-                story.append(Paragraph(f"{c.name or c.id}　（{c.track or '—'}）", h2))
+                suffix = c.elective or c.track
+                class_title = f"{c.name or c.id}　（{suffix}）" if suffix else (c.name or c.id)
+                story.append(Paragraph(class_title, h2))
                 rows = _grid_rows(p, c, cfg)
                 tbl = Table(rows, colWidths=[34 * mm] + [29 * mm] * NUM_DAYS)
                 tbl.setStyle(TableStyle([

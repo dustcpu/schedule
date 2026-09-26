@@ -327,8 +327,8 @@ fn generate_task_id() -> String {
 
 /// 找排课引擎：
 /// 1) 发布模式：resource_dir/engine/engine.exe（sidecar）
-/// 2) 开发模式：优先 CARGO_MANIFEST_DIR/../engine/engine.py（真引擎），
-///    找不到再 fallback 到 mock_engine.py
+/// 2) 开发模式：优先 src-tauri/resources/engine/engine.exe，
+///    然后 CARGO_MANIFEST_DIR/../engine/engine.py，最后 fallback mock_engine.py
 fn build_engine_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>), String> {
     // 发布模式 sidecar
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -337,8 +337,13 @@ fn build_engine_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>),
             return Ok((sidecar.to_string_lossy().to_string(), vec![]));
         }
     }
-    // 开发模式：优先真引擎 engine.py
+    // 开发模式：优先 engine.exe（和发布模式一致）
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dev_exe = Path::new(manifest_dir).join("resources/engine/engine.exe");
+    if dev_exe.exists() {
+        return Ok((dev_exe.to_string_lossy().to_string(), vec![]));
+    }
+    // 然后真引擎 engine.py
     let engine_script = Path::new(manifest_dir).join("../engine/engine.py");
     let mock_script = Path::new(manifest_dir).join("../engine/mock_engine.py");
 

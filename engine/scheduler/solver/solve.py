@@ -39,23 +39,37 @@ def _extract_grid(sol: Dict[Any, int]) -> Grid:
     return grid
 
 
-def _describe(sol: Dict[Any, int], bundle: ModelBundle) -> str:
-    """生成方案特征描述（用于 plans[].note）。"""
+def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle) -> Dict[str, float]:
+    """计算方案的多维度指标。"""
     cfg = bundle.cfg
     x = bundle.x
     periods = cfg.periods()
     days = list(range(1, NUM_DAYS + 1))
     core = set(cfg.consecutive.subjects)
     mp = cfg.schedule.morning_periods
+    n_per = cfg.schedule.periods_per_day
 
-    # 首节主科占比
+    # 1. 首节主科率
     first_total = first_core = 0
-    # 自习在下午占比
+    # 2. 自习后置率
     ss_total = ss_pm = 0
+    # 3. 下午主科比例（越低越好，主科尽量在上午）
+    pm_total = pm_core = 0
+    # 4. 主科分散违反（同一天同一班主科超过2节的次数）
+    core_over = 0
+    # 5. 体育首末节违反
+    pe_violation = 0
+
+    subjects_by_class: Dict[str, List[str]] = bundle.subjects_by_class
+    # 按班按天统计
+    class_day_subjects: Dict[Tuple[str, int], List[str]] = {}
+
     for k, var in x.items():
         cid, s, d, per = k
         if sol.get(k) != 1:
             continue
+        class_day_subjects.setdefault((cid, d), []).append(s)
+
         if per == 1:
             first_total += 1
             if s in core:
@@ -64,14 +78,20 @@ def _describe(sol: Dict[Any, int], bundle: ModelBundle) -> str:
             ss_total += 1
             if per > mp:
                 ss_pm += 1
+        if per > mp:
+            pm_total += 1
+            if s in core:
+                pm_core += 1
+        if s == PE_SUBJECT and (per == 1 or per == n_per):
+            pe_violation += 1
 
-    parts = []
-    if first_total:
-        parts.append(f"首节主科 {round(first_core / first_total * 100)}%")
-    if ss_total:
-        parts.append(f"自习在下午 {round(ss_pm / ss_total * 100)}%")
+    # 主科分散违反
+    for (cid, d), subs in class_day_subjects.items():
+        core_cnt = sum(1 for s in subs if s in core)
+        if core_cnt > 2:
+            core_over += core_cnt - 2
 
-    # 教师日均极差
+    # 6. 教师日均极差
     teacher_of = {(c.class_id, c.subject): c.teacher_id for c in bundle.problem.courses}
     teacher_day: Dict[str, Dict[int, int]] = {}
     for k, var in x.items():
@@ -86,10 +106,51 @@ def _describe(sol: Dict[Any, int], bundle: ModelBundle) -> str:
     for t, dd in teacher_day.items():
         vals = [dd.get(d, 0) for d in days]
         spans.append(max(vals) - min(vals))
-    if spans:
-        parts.append(f"教师日均极差 {max(spans)} 节")
+    max_span = max(spans) if spans else 0
+    avg_span = sum(spans) / len(spans) if spans else 0
 
-    return "，".join(parts) if parts else "满足全部硬约束"
+    return {
+        "first_core_rate": (first_core / first_total * 100) if first_total else 0,
+        "selfstudy_pm_rate": (ss_pm / ss_total * 100) if ss_total else 0,
+        "pm_core_rate": (pm_core / pm_total * 100) if pm_total else 0,
+        "core_over": core_over,
+        "pe_violation": pe_violation,
+        "teacher_max_span": max_span,
+        "teacher_avg_span": avg_span,
+    }
+
+
+def _describe(metrics: Dict[str, float], rank: Dict[str, int], total: int) -> str:
+    """根据指标和排名生成特点描述。"""
+    parts = []
+
+    # 基础指标（一位小数，更精确）
+    parts.append(f"首节主科 {metrics['first_core_rate']:.1f}%")
+    parts.append(f"自习下午 {metrics['selfstudy_pm_rate']:.1f}%")
+    parts.append(f"教师极差 {metrics['teacher_max_span']:.0f}节")
+    parts.append(f"下午主科 {metrics['pm_core_rate']:.1f}%")
+
+    # 突出特点（各维度排名）
+    highlights = []
+    rank_labels = {
+        "first_core_rate": "首节主科",
+        "selfstudy_pm_rate": "自习后置",
+        "teacher_max_span_rev": "教师均衡",
+        "pm_core_rate_rev": "主科集中上午",
+        "core_over_rev": "主科分散",
+        "penalty_rev": "软约束最优",
+    }
+    for key, label in rank_labels.items():
+        r = rank.get(key, 99)
+        if r == 1:
+            highlights.append(f"{label}第1")
+        elif r == 2 and total <= 5:
+            highlights.append(f"{label}第2")
+
+    if highlights:
+        parts.append("★ " + "、".join(highlights[:3]))
+
+    return "，".join(parts)
 
 
 def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
@@ -133,22 +194,69 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
     if not raw:
         return [], warnings, last_status
 
-    # 评分：以本批最优惩罚为 100 分基准，最差不低于 70
-    pens = [r[1] for r in raw]
-    min_pen, max_pen = min(pens), max(pens)
-    span = max(1.0, max_pen - min_pen)
+    # 计算每个方案的多维度指标
+    all_metrics = []
+    for sol, pen, st in raw:
+        m = _calc_metrics(sol, bundle)
+        m["penalty"] = pen
+        all_metrics.append(m)
 
+    # 计算每个指标的排名（1=最好）
+    n = len(all_metrics)
+    ranks = []
+    for i in range(n):
+        r = {}
+        # 首节主科率：越高越好
+        r["first_core_rate"] = sum(1 for j in range(n) if all_metrics[j]["first_core_rate"] > all_metrics[i]["first_core_rate"]) + 1
+        # 自习后置率：越高越好
+        r["selfstudy_pm_rate"] = sum(1 for j in range(n) if all_metrics[j]["selfstudy_pm_rate"] > all_metrics[i]["selfstudy_pm_rate"]) + 1
+        # 下午主科率：越低越好
+        r["pm_core_rate_rev"] = sum(1 for j in range(n) if all_metrics[j]["pm_core_rate"] < all_metrics[i]["pm_core_rate"]) + 1
+        # 主科分散违反：越少越好
+        r["core_over_rev"] = sum(1 for j in range(n) if all_metrics[j]["core_over"] < all_metrics[i]["core_over"]) + 1
+        # 教师极差：越小越好
+        r["teacher_max_span_rev"] = sum(1 for j in range(n) if all_metrics[j]["teacher_max_span"] < all_metrics[i]["teacher_max_span"]) + 1
+        # 惩罚值：越低越好
+        r["penalty_rev"] = sum(1 for j in range(n) if all_metrics[j]["penalty"] < all_metrics[i]["penalty"]) + 1
+        ranks.append(r)
+
+    # 综合评分：多维度加权（满分100）
+    # 权重：首节主科20% + 自习后置20% + 教师均衡20% + 主科分散15% + 下午主科15% + 惩罚值10%
     plans: List[Plan] = []
-    for i, (sol, pen, st) in enumerate(raw, start=1):
-        score = 100.0 - (pen - min_pen) / span * 30.0
-        score = round(max(0.0, min(100.0, score)), 1)
+    for i, (sol, pen, st) in enumerate(raw):
+        m = all_metrics[i]
+        r = ranks[i]
+        n_plans = len(raw)
+
+        # 每个维度按排名换算成分数（第1名100分，最后一名70分）
+        def rank_score(rank):
+            if n_plans <= 1:
+                return 100.0
+            return 100.0 - (rank - 1) / (n_plans - 1) * 30.0
+
+        score = (
+            rank_score(r["first_core_rate"]) * 0.20 +
+            rank_score(r["selfstudy_pm_rate"]) * 0.20 +
+            rank_score(r["teacher_max_span_rev"]) * 0.20 +
+            rank_score(r["core_over_rev"]) * 0.15 +
+            rank_score(r["pm_core_rate_rev"]) * 0.15 +
+            rank_score(r["penalty_rev"]) * 0.10
+        )
+        score = round(score, 1)
+
         plans.append(Plan(
-            index=i,
-            name=PLAN_NAMES[(i - 1) % len(PLAN_NAMES)],
+            index=i + 1,
+            name=PLAN_NAMES[i % len(PLAN_NAMES)],
             score=score,
-            note=_describe(sol, bundle),
+            note=_describe(m, r, n_plans),
             grid=_extract_grid(sol),
         ))
+
+    # 按评分排序（高分在前）
+    plans.sort(key=lambda p: -p.score)
+    # 重新编号
+    for i, p in enumerate(plans):
+        p.index = i + 1
 
     if len(plans) < cfg.solver.min_plans:
         warnings.append(

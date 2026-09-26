@@ -18,11 +18,11 @@
       <div class="info-content">
         <p>请上传包含以下三个 sheet 的 <strong>.xlsx</strong> 文件：</p>
         <ul>
-          <li><strong>教师</strong>：教师ID、任教学科、教师姓名、职务（班主任/年级主任等）</li>
-          <li><strong>班级</strong>：班级名称、班级ID、年级、班主任、选科（如物化生、政史地）</li>
-          <li><strong>课程</strong>：班级ID、学科、教师ID、周课时、连堂节数、单双周</li>
+          <li><strong>教师</strong>：教师ID、教师姓名、任教学科、职务（只需填语数英、物化生政史地等参与排课的教师，体育/艺术无需填写）</li>
+          <li><strong>班级</strong>：班级ID、班级名称、年级、班主任、选科（如物化生、政史地）</li>
+          <li><strong>课时标准</strong>：学科、选考周课时、非选考周课时、连堂节数、连堂日</li>
         </ul>
-        <p class="info-note">固定课（班会/研究性学习/校本课）需在课程表中填行，教师ID可留空。</p>
+        <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并按教师工作量均衡自动分配任课教师。如需特殊指定（如某某老师教尖子班），可在下方「特殊要求」中输入，格式：T001教C01语文。体育活动为每天第9节固定附加，不参与排课。</p>
         <button id="btn-download-template" class="ghost-btn" style="margin-top:8px;">📥 下载输入模板</button>
       </div>
     </section>

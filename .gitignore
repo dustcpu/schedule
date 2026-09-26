@@ -41,3 +41,6 @@ Thumbs.db
 
 # Office 临时锁文件（打开 xlsx/docx 时自动生成，形如 ~$result.xlsx）
 ~$*
+
+# 引擎二进制（通过 Release 分发）
+src-tauri/resources/engine/
