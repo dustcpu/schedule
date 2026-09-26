@@ -34,6 +34,8 @@ def main() -> int:
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
+        # 协议 §2 / §10：引擎进程不允许弹出任何 GUI 或控制台窗口
+        "--noconsole",
         "--name", "engine",
         "--clean",
         "--noconfirm",

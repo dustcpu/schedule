@@ -22,6 +22,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
+from . import __version__ as ENGINE_VERSION
 from .config import DAYS, NUM_DAYS
 from .data.load import Problem
 from .solver.solve import Plan
@@ -29,6 +30,7 @@ from .solver.solve import Plan
 HEADER_FILL = "2563EB"
 SUBHEADER_FILL = "E5E7EB"
 CLASSES_PER_PAGE = 3  # PDF 每页放几个班的课表
+SPORTS_ACTIVITY = "体育活动"  # 附加行显示名（不参与排课）
 
 
 # ---------------------------------------------------------------- 字体
@@ -51,7 +53,9 @@ def register_font() -> str:
 # ---------------------------------------------------------------- 课表网格
 def _grid_rows(plan: Plan, ci, cfg) -> List[List[str]]:
     """生成某班课表的二维表（含表头）。
-    体育活动不参与排课决策，固定附加在每天第8节之后作为第9节。
+
+    体育活动不参与排课决策，作为附加行显示在正课之后。
+    是否附加由 cfg.schedule.sports_activity 控制，节次与时钟由作息推算。
     """
     labels = cfg.period_labels()
     rows: List[List[str]] = [["时间"] + DAYS]
@@ -60,8 +64,9 @@ def _grid_rows(plan: Plan, ci, cfg) -> List[List[str]]:
         for d in range(1, NUM_DAYS + 1):
             row.append(plan.grid.get((ci.id, d, per), ""))
         rows.append(row)
-    # 附加第9节：体育活动（固定，不参与排课）
-    rows.append(["第9节 17:05-17:45"] + ["体育活动"] * NUM_DAYS)
+    # 附加体育活动行（固定，不参与排课；标签由作息推算）
+    if getattr(cfg.schedule, "sports_activity", True):
+        rows.append([cfg.activity_label()] + [SPORTS_ACTIVITY] * NUM_DAYS)
     return rows
 
 
@@ -206,6 +211,9 @@ def write_status(path: str, task_id: str, code: int, message: str,
         "task_id": task_id,
         "code": code,
         "message": message,
+        # 打包用了 --noconsole（协议 §2），stdout 版本号在发布形态不可见，
+        # 故在此冗余一份，便于外壳与用户追溯引擎版本。
+        "engine_version": ENGINE_VERSION,
         "plans": [
             {"index": p.index, "name": p.name, "score": p.score, "note": p.note}
             for p in plans

@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 """硬约束自检：验证求解结果是否真的满足 H1-H5（跑通 ≠ 正确）。
 
-用法: python verify_hard.py <输入目录> [检查第几套方案，默认第1套]
+用法:
+    python verify_hard.py <输入目录> [方案序号]                 # 重新求解后自检
+    python verify_hard.py <输入目录> --xlsx <result.xlsx>       # 校验真正交付出去的那份文件
+
+注意：默认模式是「重新求解再校验」，校验的是内存里刚算出来的方案，
+      不等于 result.xlsx 里那一份（求解带随机性）。要验证交付物请用 --xlsx。
 
 检查项：
   H1 每格唯一且不为空
@@ -9,7 +14,11 @@
   H3 教师冲突（同一教师同一天同一节不带多个班）
   H4 固定课落在指定 (天, 节)
   H5 连堂：连堂日该科节数 == 块长×块数，且位置连续
+
+--xlsx 模式额外检查交付质量：
+  结构（sheet 名 / 输出文件数）· 方案两两差异率 · 评分是否雷同 · warnings 是否重复
 """
+import json
 import os
 import sys
 from collections import defaultdict
@@ -87,6 +96,142 @@ def check_plan(problem, plan) -> list:
     return errs
 
 
+def _resolve_cid(title, classes):
+    """课表标题行 → 班级ID。
+
+    export.py 写的是 f"{ci.name or ci.id}　（{选科或科类}）"，
+    标题带后缀，不能直接当班级名用。
+    """
+    base = title.split("　")[0].strip()
+    for c in classes:
+        nm = c.name or c.id
+        if title == nm or title.startswith(nm) or base == nm:
+            return c.id
+    return title
+
+
+def load_result_grids(path, classes, periods):
+    """从 result.xlsx 解析每个方案、每个班的课表网格。
+
+    返回 {sheet名: {(班级标题, 天, 节): 学科}}。
+    跳过节次 > periods_per_day 的附加行（如体育活动），它们不参与排课。
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, data_only=True)
+    out = {}
+    for sn in wb.sheetnames:
+        if not sn.startswith("方案"):
+            continue
+        ws = wb[sn]
+        grid = {}
+        cur = None
+        for row in ws.iter_rows(values_only=True):
+            cells = [("" if c is None else str(c)) for c in row]
+            cells = [c for c in cells if c != ""]
+            if not cells:
+                continue
+            if len(cells) == 1:
+                cur = cells[0]
+                continue
+            if len(cells) >= 6 and cells[0].startswith("第"):
+                try:
+                    per = int(cells[0].split("节")[0].replace("第", ""))
+                except ValueError:
+                    continue
+                if cur is None or per not in periods:
+                    continue
+                for i, d in enumerate(range(1, NUM_DAYS + 1), start=1):
+                    grid[(cur, d, per)] = cells[i]
+        out[sn] = grid
+    return out
+
+
+def verify_xlsx(in_dir, xlsx_path):
+    """校验真正交付出去的那份 result.xlsx（默认模式是重新求解，验不到交付物）。"""
+    from scheduler.solver.solve import Plan
+
+    problem = load_problem(in_dir)
+    cfg = problem.config
+    periods = set(cfg.periods())
+    classes = problem.classes
+
+    grids = load_result_grids(xlsx_path, classes, periods)
+
+    status_path = os.path.join(os.path.dirname(xlsx_path), "status.json")
+    status = {}
+    if os.path.exists(status_path):
+        with open(status_path, "r", encoding="utf-8") as f:
+            status = json.load(f)
+
+    print(f"交付文件: {xlsx_path}")
+    print(f"方案 sheet: {sorted(grids)}")
+
+    errs = []
+
+    # 1) 结构：sheet 名与 plans 对应
+    plans_meta = status.get("plans", [])
+    if plans_meta:
+        expect = {f"方案{p['index']}" for p in plans_meta}
+        got = set(grids)
+        if expect != got:
+            errs.append(f"结构: status.json 声明 {sorted(expect)}，xlsx 实际 {sorted(got)}")
+
+    # 把标题映射回班级ID后逐方案校验 H1-H5
+    by_id = {}
+    for sheet, g in grids.items():
+        reg = {}
+        for (title, d, per), s in g.items():
+            reg[(_resolve_cid(title, classes), d, per)] = s
+        by_id[sheet] = reg
+
+    for sheet in sorted(by_id):
+        reg = by_id[sheet]
+        meta = next((p for p in plans_meta if f"方案{p['index']}" == sheet), {})
+        plan = Plan(index=meta.get("index", 0), name=meta.get("name", sheet),
+                    score=meta.get("score", 0), note=meta.get("note", ""), grid=reg)
+        e = check_plan(problem, plan)
+        if e:
+            errs.append(f"{sheet}（{plan.name}）硬约束违反 {len(e)} 处，"
+                        f"例：{e[0]}")
+        else:
+            print(f"  ✅ {sheet}（{plan.name}，评分 {plan.score}）H1-H5 均满足")
+
+    # 2) 方案两两差异率（协议 §4.1 要求「不同的可行方案」）
+    import itertools
+    sheets = sorted(by_id)
+    if len(sheets) >= 2 and by_id[sheets[0]]:
+        keys = list(by_id[sheets[0]].keys())
+        rates = []
+        for a, b in itertools.combinations(sheets, 2):
+            diff = sum(1 for k in keys if by_id[a].get(k) != by_id[b].get(k))
+            rates.append(diff / len(keys) * 100)
+        print(f"  方案差异率: min {min(rates):.1f}%  max {max(rates):.1f}%  （验收线 ≥5%）")
+        if min(rates) < 5:
+            errs.append(f"方案过于雷同：最小差异率仅 {min(rates):.1f}%（要求 ≥5%）")
+
+    # 3) 评分是否雷同
+    scores = [p.get("score") for p in plans_meta]
+    if scores:
+        uniq = len(set(scores))
+        print(f"  评分: {scores} → {uniq} 个不同值，极差 {max(scores) - min(scores):.1f}")
+        if len(scores) >= 2 and uniq < 2:
+            errs.append("所有方案评分完全相同，无法体现差异")
+
+    # 4) warnings 是否重复
+    ws = status.get("warnings", [])
+    if ws and len(ws) != len(set(ws)):
+        errs.append(f"warnings 存在重复：{len(ws)} 条中去重后仅 {len(set(ws))} 条")
+
+    if errs:
+        print(f"\n❌ 交付文件校验未通过（{len(errs)} 项）：")
+        for e in errs:
+            print("  -", e)
+        return 1
+    print("\n✅ 交付文件校验通过（结构 / H1-H5 / 差异率 / 评分 / 告警）")
+    return 0
+
+
 def print_grid(problem, plan, class_id):
     cfg = problem.config
     periods = cfg.periods()
@@ -102,9 +247,20 @@ def print_grid(problem, plan, class_id):
 def main():
     if len(sys.argv) < 2:
         print("用法: python verify_hard.py <输入目录> [方案序号]")
+        print("      python verify_hard.py <输入目录> --xlsx <result.xlsx>")
         return 1
     in_dir = sys.argv[1]
-    pick = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    args = sys.argv[2:]
+
+    # 校验真正交付出去的那份文件（默认模式是重新求解，验不到交付物）
+    if "--xlsx" in args:
+        i = args.index("--xlsx")
+        if i + 1 >= len(args):
+            print("错误: --xlsx 后需要跟 result.xlsx 路径")
+            return 1
+        return verify_xlsx(in_dir, args[i + 1])
+
+    pick = int(args[0]) if args else 1
 
     problem = load_problem(in_dir)
     warnings = validate(problem)
