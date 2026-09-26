@@ -9,4 +9,4 @@
   solver.solve  求解 + 多解 + 评分
   export        写 result.xlsx / result.pdf / status.json
 """
-__version__ = "0.1.0"
+__version__ = "0.1.5"
