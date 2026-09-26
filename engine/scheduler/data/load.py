@@ -21,7 +21,7 @@ import re
 # 这些科目在课表上不显示教师姓名，也不需要在任课安排中指定
 NO_TEACHER_SUBJECTS = {"体育", "体育活动", "艺术", "音乐", "美术", "信息技术", "通用技术", "心理", "班会", "研究性学习", "校本课", "自习"}
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from openpyxl import load_workbook
 
@@ -241,12 +241,16 @@ def _load_courses_old(ws, class_ids):
 
 
 def _parse_teacher_constraints(text, teachers, classes):
-    """从额外约束文本中解析教师指定，返回 {(班级ID, 学科): 教师ID}。
+    """从额外约束文本中解析教师指定。
+
+    返回 ({(班级ID, 学科): 教师ID}, [疑似教师指定但无法解析的行])。
+    第二项供上层按协议 §6 写 warning（用户文字要求无法解析 → 忽略并提示）。
     支持：T001=C01语文 / T001教C01语文 / 张老师教高二1班语文
     """
     result = {}
+    unparsed: List[str] = []
     if not text:
-        return result
+        return result, unparsed
     text = text.lstrip('\ufeff')
     name_to_tid = {t.name: tid for tid, t in teachers.items()}
     cname_to_cid = {c.name: c.id for c in classes}
@@ -259,11 +263,16 @@ def _parse_teacher_constraints(text, teachers, classes):
         line = re.sub(r'^[指定：\s]+', '', line)
         m = re.match(r'^(.+?)\s*[=教]\s*(.+)$', line)
         if not m:
+            # 只有「看起来像教师指定」（含 = 或 教）才计入未解析，
+            # 否则「年级：高二」「测试用例」这类普通说明会被误报。
+            if re.search(r'[=教]', line):
+                unparsed.append(line)
             continue
         t_str = m.group(1).strip()
         rest = m.group(2).strip()
         tid = t_str if t_str in teachers else name_to_tid.get(t_str)
         if not tid:
+            unparsed.append(line)
             continue
         cid = None
         subj = rest
@@ -278,6 +287,7 @@ def _parse_teacher_constraints(text, teachers, classes):
                     subj = rest[len(cname):].strip()
                     break
         if not cid or cid not in class_ids:
+            unparsed.append(line)
             continue
         matched = None
         for s in sorted(all_subjects, key=len, reverse=True):
@@ -286,7 +296,9 @@ def _parse_teacher_constraints(text, teachers, classes):
                 break
         if matched:
             result[(cid, matched)] = tid
-    return result
+        else:
+            unparsed.append(line)
+    return result, unparsed
 
 
 def _generate_courses_new(classes, teachers, standards, assignments, warnings, teacher_constraints=None):
@@ -308,11 +320,11 @@ def _generate_courses_new(classes, teachers, standards, assignments, warnings, t
         if t.subject:
             teachers_by_subject.setdefault(t.subject, []).append(tid)
 
-    teacher_load = {tid: 0 for tid in teachers}
-    courses = []
-    auto_assigned = 0
     subj_map = {"物": "物理", "化": "化学", "生": "生物", "政": "政治", "史": "历史", "地": "地理"}
 
+    # ---- Pass A：先算出每条课程的课时需求（此时还不决定教师）----
+    demands: List[Tuple[ClassInfo, PeriodStandard, int]] = []
+    weekly_of: Dict[Tuple[str, str], int] = {}
     for ci in classes:
         elective_set = set()
         if ci.elective:
@@ -321,26 +333,42 @@ def _generate_courses_new(classes, teachers, standards, assignments, warnings, t
                     elective_set.add(subj_map[ch])
         for std in standards:
             subj = std.subject
-            is_elective = subj in elective_set
-            weekly = std.elective_periods if is_elective else std.non_elective_periods
+            weekly = std.elective_periods if subj in elective_set else std.non_elective_periods
             if weekly <= 0:
                 continue
-            if subj in NO_TEACHER_SUBJECTS:
-                tid = None
-            else:
-                tid = assignment_map.get((ci.id, subj))
-                if not tid:
-                    candidates = teachers_by_subject.get(subj, [])
-                    if candidates:
-                        tid = min(candidates, key=lambda t: teacher_load.get(t, 0))
-                        teacher_load[tid] = teacher_load.get(tid, 0) + weekly
-                        auto_assigned += 1
-                    else:
-                        tid = None
-            courses.append(CourseReq(
-                class_id=ci.id, subject=subj, teacher_id=tid,
-                weekly=weekly, block_len=std.block_len, week_mode="每周",
-            ))
+            demands.append((ci, std, weekly))
+            weekly_of[(ci.id, subj)] = weekly
+
+    # ---- Pass B：显式指派（「任课安排」sheet / 「特殊要求」）的课时先记账 ----
+    # 修复：此前只在「自动分配」分支累加负载（teacher_load），显式指派的课时不计入，
+    # 于是已被指派多班的教师仍被贪心当成最闲的人反复选中 → 超载 → H3 冲突 → 整表无解。
+    teacher_load = {tid: 0 for tid in teachers}
+    for (cid, subj), tid in assignment_map.items():
+        if tid in teacher_load:
+            teacher_load[tid] += weekly_of.get((cid, subj), 0)
+
+    # ---- Pass C：逐条决定教师 ----
+    courses = []
+    auto_assigned = 0
+    for ci, std, weekly in demands:
+        subj = std.subject
+        if subj in NO_TEACHER_SUBJECTS:
+            tid = None
+        else:
+            tid = assignment_map.get((ci.id, subj))
+            if not tid:
+                candidates = teachers_by_subject.get(subj, [])
+                if candidates:
+                    # 负载相同时按教师ID稳定排序，保证分配结果可复现
+                    tid = min(candidates, key=lambda t: (teacher_load.get(t, 0), t))
+                    teacher_load[tid] = teacher_load.get(tid, 0) + weekly
+                    auto_assigned += 1
+                else:
+                    tid = None
+        courses.append(CourseReq(
+            class_id=ci.id, subject=subj, teacher_id=tid,
+            weekly=weekly, block_len=std.block_len, week_mode="每周",
+        ))
     if auto_assigned > 0:
         warnings.append(
             f"有 {auto_assigned} 条课程未指定教师，已按学科和工作量自动分配。"
@@ -367,13 +395,28 @@ def load_problem(in_dir):
     is_new_format = period_ws is not None
     warnings_list = []
 
+    # 先读 requirements —— 教师指定必须在「生成课程」时就参与负载记账，
+    # 否则已指派的教师会被贪心当成最闲的人继续压课（会导致整表无解）。
+    requirements = ""
+    req_path = os.path.join(in_dir, "requirements.txt")
+    if os.path.exists(req_path):
+        try:
+            with open(req_path, "r", encoding="utf-8") as f:
+                requirements = f.read().strip()
+        except Exception:
+            requirements = ""
+    teacher_constraints, unparsed_specs = _parse_teacher_constraints(
+        requirements, teachers, classes)
+
     if is_new_format:
         standards = _load_period_standards(period_ws)
         assignments = _load_teaching_assignments(
             _find_sheet(wb, ["任课安排", "任课", "teaching_assignments"]))
         if not standards:
             raise DataError("「课时标准」sheet 为空，无法排课")
-        courses = _generate_courses_new(classes, teachers, standards, assignments, warnings_list)
+        # 单次生成：教师指定一次传入，避免重复调用导致负载账本重置与告警重复
+        courses = _generate_courses_new(classes, teachers, standards, assignments,
+                                        warnings_list, teacher_constraints)
         warnings_list.append(f"新格式：{len(standards)} 门学科标准，生成 {len(courses)} 条课程")
     else:
         courses = _load_courses_old(
@@ -393,20 +436,27 @@ def load_problem(in_dir):
             cfg = Config()
             warnings_list.append(f"hard_limits.json 解析失败：{e}")
 
-    requirements = ""
-    req_path = os.path.join(in_dir, "requirements.txt")
-    if os.path.exists(req_path):
-        try:
-            with open(req_path, "r", encoding="utf-8") as f:
-                requirements = f.read().strip()
-        except Exception:
-            requirements = ""
+    # 统一应用教师指定：新格式已在生成时套用（此处幂等），
+    # 旧格式此前会被静默丢弃，现按协议 §6 应用并如实告警。
+    if teacher_constraints:
+        applied, skipped = 0, []
+        for (cid, subj), tid in teacher_constraints.items():
+            hit = [c for c in courses if c.class_id == cid and c.subject == subj]
+            if hit:
+                hit[0].teacher_id = tid
+                applied += 1
+            else:
+                skipped.append(f"{tid}教{cid}{subj}")
+        warnings_list.append(
+            f"已从额外约束中解析 {len(teacher_constraints)} 条教师指定，成功应用 {applied} 条。")
+        if skipped:
+            show = "、".join(skipped[:5]) + ("…" if len(skipped) > 5 else "")
+            warnings_list.append(f"以下教师指定在课程表中找不到对应条目，已忽略：{show}")
 
-    # 解析额外约束中的教师指定（如 T001教C01语文）
-    teacher_constraints = _parse_teacher_constraints(requirements, teachers, classes)
-    if is_new_format and teacher_constraints:
-        courses = _generate_courses_new(classes, teachers, standards, assignments, warnings_list, teacher_constraints)
-        warnings_list.append(f"已从额外约束中解析 {len(teacher_constraints)} 条教师指定。")
+    if unparsed_specs:
+        show = "、".join(unparsed_specs[:3]) + ("…" if len(unparsed_specs) > 3 else "")
+        warnings_list.append(
+            f"额外约束中有 {len(unparsed_specs)} 行像是教师指定但无法解析，已忽略：{show}")
 
     p = Problem(classes=classes, teachers=teachers, courses=courses,
                 requirements=requirements, config=cfg, warnings=warnings_list)
