@@ -7,7 +7,7 @@
 同时实现修正 R2 的节次时间标签算法：午休后必须重置到 afternoon_start。
 """
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 # 一周上课日（v1 只排周一至周五，不含早读/晚自习）
 DAYS: List[str] = ["周一", "周二", "周三", "周四", "周五"]
@@ -37,6 +37,10 @@ class ScheduleRule:
     eye_break_minutes: int = 15
     default_break_minutes: int = 10
     morning_periods: int = 5  # 上午节数，决定连堂可放置范围
+    # 体育活动：作为附加行显示在正课之后（不参与排课、不占 grid_size）。
+    # 关闭后置 False，课表只输出 periods_per_day 行。
+    sports_activity: bool = True
+    activity_minutes: int = 40
 
     @staticmethod
     def from_dict(d: Dict[str, Any], base: "ScheduleRule") -> "ScheduleRule":
@@ -49,28 +53,32 @@ class ScheduleRule:
         return s
 
 
+def _parse_tm(t: str) -> int:
+    """'HH:MM' → 当日分钟数。"""
+    h, m = str(t).split(":")
+    return int(h) * 60 + int(m)
+
+
+def _fmt_tm(x: int) -> str:
+    """当日分钟数 → 'HH:MM'。"""
+    return f"{x // 60:02d}:{x % 60:02d}"
+
+
 def compute_period_labels(s: ScheduleRule) -> List[str]:
     """计算每节的时钟标签。
 
     修正 mock_engine.py 的 R2 缺陷：上午排完后必须重置到 afternoon_start，
     否则午休缺口丢失、下午节次整体前移约 2 小时。
     """
-    def parse_tm(t: str) -> int:
-        h, m = str(t).split(":")
-        return int(h) * 60 + int(m)
-
-    def fmt_tm(x: int) -> str:
-        return f"{x // 60:02d}:{x % 60:02d}"
-
     labels: List[str] = []
-    cur = parse_tm(s.morning_start)
+    cur = _parse_tm(s.morning_start)
     for p in range(1, s.periods_per_day + 1):
         # 关键：第 (morning_periods+1) 节开始进入下午，时钟重置到 afternoon_start
         if p == s.morning_periods + 1:
-            cur = parse_tm(s.afternoon_start)
+            cur = _parse_tm(s.afternoon_start)
         start = cur
         end = cur + s.period_minutes
-        labels.append(f"第{p}节 {fmt_tm(start)}-{fmt_tm(end)}")
+        labels.append(f"第{p}节 {_fmt_tm(start)}-{_fmt_tm(end)}")
         cur = end
         if p < s.periods_per_day:
             if p == s.long_break_after_period:
@@ -80,6 +88,18 @@ def compute_period_labels(s: ScheduleRule) -> List[str]:
             else:
                 cur += s.default_break_minutes
     return labels
+
+
+def compute_activity_label(s: ScheduleRule) -> str:
+    """体育活动附加行的标签（节次 + 时钟），由作息推算而非硬编码。
+
+    默认 8 节制下推出「第9节 17:05-17:45」，与改造前逐字一致。
+    """
+    labels = compute_period_labels(s)
+    last_end = labels[-1].split(" ")[1].split("-")[1]   # 如 "16:55"
+    start = _parse_tm(last_end) + s.default_break_minutes
+    end = start + s.activity_minutes
+    return f"第{s.periods_per_day + 1}节 {_fmt_tm(start)}-{_fmt_tm(end)}"
 
 
 # ---------------------------------------------------------------- 固定课 / 连堂
@@ -213,6 +233,49 @@ class SolverConfig:
         return c
 
 
+# ---------------------------------------------------------------- 方案权重档位
+# 每套方案用一套不同的软约束权重求解，让 3-8 套方案真正有所差异
+# （协议 §4.1 要求「3-8 套不同的可行方案」）。
+#
+# 设计原则：
+#   1. 主导项拉到默认的 10-15 倍，否则求解器不会为该维度真正让步；
+#   2. 非主导项降到 0-2，否则所有档位都被默认权重拉回同一片解空间；
+#   3. 第一档 = 默认权重，作为「标准课表」参照。
+PLAN_PROFILES: List[Tuple[str, Dict[str, int]]] = [
+    ("均衡方案", {
+        "spread_core": 3, "pe_not_first_last": 2, "teacher_balance": 2,
+        "core_morning_first": 1, "selfstudy_afternoon": 1}),
+    ("主科优先方案", {
+        "spread_core": 5, "pe_not_first_last": 1, "teacher_balance": 1,
+        "core_morning_first": 12, "selfstudy_afternoon": 1}),
+    ("自习后置方案", {
+        "spread_core": 2, "pe_not_first_last": 1, "teacher_balance": 1,
+        "core_morning_first": 2, "selfstudy_afternoon": 12}),
+    ("教师均衡方案", {
+        "spread_core": 2, "pe_not_first_last": 1, "teacher_balance": 15,
+        "core_morning_first": 0, "selfstudy_afternoon": 0}),
+    ("分散方案", {
+        "spread_core": 15, "pe_not_first_last": 8, "teacher_balance": 1,
+        "core_morning_first": 0, "selfstudy_afternoon": 0}),
+    ("体育错峰方案", {
+        "spread_core": 2, "pe_not_first_last": 15, "teacher_balance": 3,
+        "core_morning_first": 2, "selfstudy_afternoon": 0}),
+]
+
+
+def resolve_profiles(target: int) -> List[Tuple[str, Dict[str, int]]]:
+    """取前 target 套权重档位；档位不够时循环复用（靠 random_seed 与汉明距离兜底区分）。"""
+    n = len(PLAN_PROFILES)
+    if not n:
+        return []
+    out = list(PLAN_PROFILES[:target])
+    i = 0
+    while len(out) < target:
+        out.append(PLAN_PROFILES[i % n])
+        i += 1
+    return out
+
+
 # ---------------------------------------------------------------- 汇总配置
 @dataclass
 class Config:
@@ -228,6 +291,10 @@ class Config:
 
     def period_labels(self) -> List[str]:
         return compute_period_labels(self.schedule)
+
+    def activity_label(self) -> str:
+        """体育活动附加行标签；由作息推算，不再硬编码。"""
+        return compute_activity_label(self.schedule)
 
     def grid_size(self) -> int:
         """每班每周总格数。"""

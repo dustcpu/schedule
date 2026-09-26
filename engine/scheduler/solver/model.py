@@ -34,17 +34,51 @@ CORE_PER_DAY_LIMIT = 2  # S1：主科每天最多节数
 
 
 @dataclass
+class SoftGroup:
+    """一组软约束惩罚项。
+
+    权重**不在建模时固化**，而是留到目标层再乘，这样同一份模型可以为
+    每套方案换一套权重（方案差异化的关键）。
+    """
+    key: str
+    exprs: List[Any] = field(default_factory=list)
+    sign: int = 1  # +1 惩罚 / -1 奖励
+
+
+@dataclass
 class ModelBundle:
     model: cp_model.CpModel
     x: Dict[Key, Any]
     terms: List[Tuple[int, Any]] = field(default_factory=list)
+    soft_terms: Dict[str, SoftGroup] = field(default_factory=dict)
     problem: Problem = None
     cfg: Config = None
     subjects_by_class: Dict[str, List[str]] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
 
-    def objective_expr(self):
-        return sum(w * e for w, e in self.terms)
+    def objective_expr(self, weights: Dict[str, int]):
+        """按给定权重档位组装目标表达式；全部为 0 时返回 None。"""
+        expr = None
+        for key, g in self.soft_terms.items():
+            w = int(weights.get(key, 0) or 0)
+            if w and g.exprs:
+                term = w * g.sign * sum(g.exprs)
+                expr = term if expr is None else expr + term
+        return expr
+
+
+def apply_objective(bundle: ModelBundle, weights: Dict[str, int]) -> None:
+    """按给定权重档位重设目标函数（覆盖式）。
+
+    CpModel.Minimize() 内部会先清空旧目标，因此可以在同一个模型上反复调用，
+    为每套方案换一个优化目标，无需重建模型（25 班建模成本只付一次）。
+    """
+    try:
+        bundle.model.clear_objective()
+    except AttributeError:
+        pass  # 老版本 ortools 没有该 API，Minimize 本身也会覆盖
+    expr = bundle.objective_expr(weights)
+    bundle.model.Minimize(expr if expr is not None else 0)
 
 
 def build_model(p: Problem) -> ModelBundle:
@@ -187,73 +221,85 @@ def build_model(p: Problem) -> ModelBundle:
             model.Add(sum(x[(cid, s, d, per)] for per in periods) <= cap)
 
     # ---------- 软约束 ----------
-    terms: List[Tuple[int, Any]] = []
+    # 辅助变量**无条件创建**（不再按权重 > 0 门控），权重只在目标层生效，
+    # 这样换权重档位时不会因为变量缺失而无法重设目标。
+    # 默认权重全 > 0，故默认档位下模型规模与此前完全一致。
+    soft_terms: Dict[str, SoftGroup] = {
+        "spread_core": SoftGroup("spread_core"),
+        "pe_not_first_last": SoftGroup("pe_not_first_last"),
+        "teacher_balance": SoftGroup("teacher_balance"),
+        "core_morning_first": SoftGroup("core_morning_first", sign=-1),
+        "selfstudy_afternoon": SoftGroup("selfstudy_afternoon"),
+    }
     w = cfg.soft
     core_subjects = set(consec.subjects)
 
     # S1 主科分散：主科每天不超过 CORE_PER_DAY_LIMIT 节
-    if w.spread_core > 0:
-        for cid, subs in subjects_by_class.items():
-            for s in subs:
-                if s not in core_subjects:
-                    continue
-                for d in days:
-                    cnt = model.NewIntVar(0, n_per, f"cnt_{cid}_{s}_{d}")
-                    model.Add(cnt == sum(x[(cid, s, d, per)] for per in periods))
-                    over = model.NewIntVar(0, n_per, f"ovr_{cid}_{s}_{d}")
-                    model.Add(over >= cnt - CORE_PER_DAY_LIMIT)
-                    terms.append((w.spread_core, over))
+    for cid, subs in subjects_by_class.items():
+        for s in subs:
+            if s not in core_subjects:
+                continue
+            for d in days:
+                cnt = model.NewIntVar(0, n_per, f"cnt_{cid}_{s}_{d}")
+                model.Add(cnt == sum(x[(cid, s, d, per)] for per in periods))
+                over = model.NewIntVar(0, n_per, f"ovr_{cid}_{s}_{d}")
+                model.Add(over >= cnt - CORE_PER_DAY_LIMIT)
+                soft_terms["spread_core"].exprs.append(over)
 
     # S2 体育不排第 1 节 / 最后一节
-    if w.pe_not_first_last > 0:
-        last = n_per
-        for cid, subs in subjects_by_class.items():
-            if PE_SUBJECT not in subs:
-                continue
-            for d in days:
-                terms.append((w.pe_not_first_last, x[(cid, PE_SUBJECT, d, 1)]))
-                terms.append((w.pe_not_first_last, x[(cid, PE_SUBJECT, d, last)]))
+    last = n_per
+    for cid, subs in subjects_by_class.items():
+        if PE_SUBJECT not in subs:
+            continue
+        for d in days:
+            soft_terms["pe_not_first_last"].exprs.append(x[(cid, PE_SUBJECT, d, 1)])
+            soft_terms["pe_not_first_last"].exprs.append(x[(cid, PE_SUBJECT, d, last)])
 
     # S3 教师日均均衡：超出日均上限的部分计罚
-    if w.teacher_balance > 0:
-        for t, pairs in by_teacher.items():
-            total = sum(req[(cid, s)] for (cid, s) in pairs)
-            cap = max(1, math.ceil(total / NUM_DAYS))
-            for d in days:
-                daily = model.NewIntVar(0, n_per, f"tl_{t}_{d}")
-                model.Add(daily == sum(x[(cid, s, d, per)] for (cid, s) in pairs for per in periods))
-                over = model.NewIntVar(0, n_per, f"tov_{t}_{d}")
-                model.Add(over >= daily - cap)
-                terms.append((w.teacher_balance, over))
+    for t, pairs in by_teacher.items():
+        total = sum(req[(cid, s)] for (cid, s) in pairs)
+        cap = max(1, math.ceil(total / NUM_DAYS))
+        for d in days:
+            daily = model.NewIntVar(0, n_per, f"tl_{t}_{d}")
+            model.Add(daily == sum(x[(cid, s, d, per)] for (cid, s) in pairs for per in periods))
+            over = model.NewIntVar(0, n_per, f"tov_{t}_{d}")
+            model.Add(over >= daily - cap)
+            soft_terms["teacher_balance"].exprs.append(over)
 
     # S4 首节主科（奖励 → 负惩罚）
-    if w.core_morning_first > 0:
-        for cid, subs in subjects_by_class.items():
-            for s in subs:
-                if s not in core_subjects:
-                    continue
-                for d in days:
-                    terms.append((-w.core_morning_first, x[(cid, s, d, 1)]))
-
-    # S5 自习后置：上午（<= 上午节数）的自习计罚
-    if w.selfstudy_afternoon > 0:
-        mp = cfg.schedule.morning_periods
-        for cid, subs in subjects_by_class.items():
-            if SELF_STUDY not in subs:
+    for cid, subs in subjects_by_class.items():
+        for s in subs:
+            if s not in core_subjects:
                 continue
             for d in days:
-                for per in periods:
-                    if per <= mp:
-                        terms.append((w.selfstudy_afternoon, x[(cid, SELF_STUDY, d, per)]))
+                soft_terms["core_morning_first"].exprs.append(x[(cid, s, d, 1)])
 
-    model.Minimize(sum(wt * e for wt, e in terms))
+    # S5 自习后置：上午（<= 上午节数）的自习计罚
+    mp = cfg.schedule.morning_periods
+    for cid, subs in subjects_by_class.items():
+        if SELF_STUDY not in subs:
+            continue
+        for d in days:
+            for per in periods:
+                if per <= mp:
+                    soft_terms["selfstudy_afternoon"].exprs.append(
+                        x[(cid, SELF_STUDY, d, per)])
 
-    return ModelBundle(
+    bundle = ModelBundle(
         model=model,
         x=x,
-        terms=terms,
+        soft_terms=soft_terms,
         problem=p,
         cfg=cfg,
         subjects_by_class=subjects_by_class,
         warnings=warnings,
     )
+    # 默认档位：用配置里的权重，行为与改造前完全一致
+    apply_objective(bundle, {
+        "spread_core": w.spread_core,
+        "pe_not_first_last": w.pe_not_first_last,
+        "teacher_balance": w.teacher_balance,
+        "core_morning_first": w.core_morning_first,
+        "selfstudy_afternoon": w.selfstudy_afternoon,
+    })
+    return bundle

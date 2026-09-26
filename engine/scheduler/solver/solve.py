@@ -4,22 +4,29 @@
 多解策略：每求出一个解，就加一条 no-good 约束禁止完全复刻，再求下一个，
 直到凑够目标套数（协议要求 3-8 套）或无解/超时。
 """
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Any, Optional
 
 from ortools.sat.python import cp_model
 
-from ..config import NUM_DAYS, SELF_STUDY
+from ..config import NUM_DAYS, SELF_STUDY, resolve_profiles
 from ..data.load import Problem
-from .model import ModelBundle, PE_SUBJECT
+from ..score import absolute_score
+from .model import ModelBundle, PE_SUBJECT, apply_objective
 
 # (班级ID, 天, 节) -> 学科
 Grid = Dict[Tuple[str, int, int], str]
 
+# 兜底：resolve_profiles 异常返回空时才用到
 PLAN_NAMES = [
     "均衡方案", "主科优先方案", "自习后置方案",
-    "教师均衡方案", "紧凑方案", "宽松方案", "错峰方案", "分散方案",
+    "教师均衡方案", "分散方案", "体育错峰方案", "紧凑方案", "宽松方案",
 ]
+
+# 全局求解预算（秒）。外壳超时是 10 分钟（main.rs ENGINE_TIMEOUT），
+# 这里留约 3 分钟给导出与进程退出，避免被强杀。
+GLOBAL_BUDGET = 420.0
 
 
 @dataclass
@@ -29,6 +36,7 @@ class Plan:
     score: float
     note: str
     grid: Grid = field(default_factory=dict)
+    profile: str = ""   # 该方案所用的权重档位名，保证「名副其实」
 
 
 def _extract_grid(sol: Dict[Any, int]) -> Grid:
@@ -59,6 +67,7 @@ def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle) -> Dict[str, float]:
     core_over = 0
     # 5. 体育首末节违反
     pe_violation = 0
+    pe_total = 0      # 体育课总节数（用于判断该维度是否适用）
 
     subjects_by_class: Dict[str, List[str]] = bundle.subjects_by_class
     # 按班按天统计
@@ -82,8 +91,10 @@ def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle) -> Dict[str, float]:
             pm_total += 1
             if s in core:
                 pm_core += 1
-        if s == PE_SUBJECT and (per == 1 or per == n_per):
-            pe_violation += 1
+        if s == PE_SUBJECT:
+            pe_total += 1
+            if per == 1 or per == n_per:
+                pe_violation += 1
 
     # 主科分散违反
     for (cid, d), subs in class_day_subjects.items():
@@ -115,41 +126,29 @@ def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle) -> Dict[str, float]:
         "pm_core_rate": (pm_core / pm_total * 100) if pm_total else 0,
         "core_over": core_over,
         "pe_violation": pe_violation,
+        "pe_total": pe_total,
+        "ss_total": ss_total,
         "teacher_max_span": max_span,
         "teacher_avg_span": avg_span,
     }
 
 
-def _describe(metrics: Dict[str, float], rank: Dict[str, int], total: int) -> str:
-    """根据指标和排名生成特点描述。"""
-    parts = []
+def _describe(metrics: Dict[str, float], sub: Dict[str, float]) -> str:
+    """根据**绝对子分**生成特点描述。
 
-    # 基础指标（一位小数，更精确）
-    parts.append(f"首节主科 {metrics['first_core_rate']:.1f}%")
-    parts.append(f"自习下午 {metrics['selfstudy_pm_rate']:.1f}%")
-    parts.append(f"教师极差 {metrics['teacher_max_span']:.0f}节")
-    parts.append(f"下午主科 {metrics['pm_core_rate']:.1f}%")
-
-    # 突出特点（各维度排名）
-    highlights = []
-    rank_labels = {
-        "first_core_rate": "首节主科",
-        "selfstudy_pm_rate": "自习后置",
-        "teacher_max_span_rev": "教师均衡",
-        "pm_core_rate_rev": "主科集中上午",
-        "core_over_rev": "主科分散",
-        "penalty_rev": "软约束最优",
-    }
-    for key, label in rank_labels.items():
-        r = rank.get(key, 99)
-        if r == 1:
-            highlights.append(f"{label}第1")
-        elif r == 2 and total <= 5:
-            highlights.append(f"{label}第2")
-
-    if highlights:
-        parts.append("★ " + "、".join(highlights[:3]))
-
+    此前用「相对排名」生成亮点，方案指标相同时会全部输出一样的亮点；
+    改用绝对子分后，亮点反映该方案真实的长板。
+    """
+    parts = [
+        f"首节主科 {metrics['first_core_rate']:.1f}%",
+        f"自习下午 {metrics['selfstudy_pm_rate']:.1f}%",
+        f"教师极差 {metrics['teacher_max_span']:.0f}节",
+        f"下午主科 {metrics['pm_core_rate']:.1f}%",
+    ]
+    tops = sorted(((v, k) for k, v in sub.items() if v is not None),
+                  reverse=True)[:2]
+    if tops:
+        parts.append("★ " + "、".join(f"{k} {v:.0f}" for v, k in tops))
     return "，".join(parts)
 
 
@@ -157,15 +156,38 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
     """返回 (方案列表, 求解过程 warnings, 最终状态字符串)。"""
     cfg = bundle.cfg
     warnings: List[str] = list(bundle.warnings)
-    raw: List[Tuple[Dict[Any, int], float, str]] = []
+    raw: List[Tuple[Dict[Any, int], str]] = []   # (解, 方案名)
 
     target = max(cfg.solver.min_plans, min(cfg.solver.max_plans, cfg.solver.num_plans))
-    last_status = "UNKNOWN"
 
-    for i in range(cfg.solver.max_plans):
+    # 汉明距离下限：要求后一套方案至少与前一套相差 k 格。
+    # 因 H1 保证每格恰好一门课，「变成 0 的原 1 变量个数」就等于「变化的格数」，
+    # 所以改成 -k 天然等价于「差异 ≥ k 格」，无需引入辅助变量。
+    n_cells = len(bundle.problem.classes) * len(cfg.periods()) * NUM_DAYS
+    k = max(2, round(0.03 * n_cells))
+
+    profiles = resolve_profiles(target)
+    if not profiles:
+        profiles = [(nm, {}) for nm in PLAN_NAMES[:target]]
+        warnings.append("权重档位配置异常，已回退为默认命名")
+
+    last_status = "UNKNOWN"
+    deadline = time.time() + GLOBAL_BUDGET
+
+    for i, (pname, weights) in enumerate(profiles):
+        budget = min(float(cfg.solver.max_time_seconds),
+                     max(5.0, (deadline - time.time()) / max(1, len(profiles) - i)))
+
+        # 每套方案换一个优化目标 —— 这是方案真正产生差异的关键
+        # （此前所有方案共用同一目标，只靠「禁止完全相同」区分，
+        #   求解器返回的是次优孪生解，实测 5 套只差 0.2%）
+        apply_objective(bundle, weights)
+
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = float(cfg.solver.max_time_seconds)
+        solver.parameters.max_time_in_seconds = budget
         solver.parameters.num_search_workers = int(cfg.solver.workers)
+        # 固定但各档不同的种子：进一步打散搜索路径，同时保证结果可复现
+        solver.parameters.random_seed = 1000 + 37 * i
 
         status = solver.Solve(bundle.model)
         if status == cp_model.OPTIMAL:
@@ -174,87 +196,48 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
             last_status = "FEASIBLE"
         elif status == cp_model.INFEASIBLE:
             last_status = "INFEASIBLE"
-            break
+            warnings.append(
+                f"方案「{pname}」无可行解（约束过严，或与已生成方案的差异要求冲突），已跳过")
+            continue
         else:  # UNKNOWN / MODEL_INVALID
             last_status = "UNKNOWN"
-            break
+            warnings.append(f"方案「{pname}」在 {budget:.0f} 秒内未求出可行解，已跳过")
+            continue
 
-        sol = {k: solver.Value(v) for k, v in bundle.x.items()}
-        pen = solver.ObjectiveValue()
-        raw.append((sol, pen, last_status))
+        sol = {key: solver.Value(v) for key, v in bundle.x.items()}
+        raw.append((sol, pname))
 
-        # no-good：禁止再次得到完全相同的解
-        ones = [bundle.x[k] for k, v in sol.items() if v == 1]
+        # no-good：下一套方案至少要与本套相差 k 格
+        ones = [bundle.x[key] for key, v in sol.items() if v == 1]
         if ones:
-            bundle.model.Add(sum(ones) <= len(ones) - 1)
+            bundle.model.Add(sum(ones) <= len(ones) - min(k, len(ones) - 1))
 
         if len(raw) >= target:
+            break
+        if time.time() > deadline:
+            warnings.append("求解已接近总时限，停止生成更多方案")
             break
 
     if not raw:
         return [], warnings, last_status
 
-    # 计算每个方案的多维度指标
-    all_metrics = []
-    for sol, pen, st in raw:
-        m = _calc_metrics(sol, bundle)
-        m["penalty"] = pen
-        all_metrics.append(m)
-
-    # 计算每个指标的排名（1=最好）
-    n = len(all_metrics)
-    ranks = []
-    for i in range(n):
-        r = {}
-        # 首节主科率：越高越好
-        r["first_core_rate"] = sum(1 for j in range(n) if all_metrics[j]["first_core_rate"] > all_metrics[i]["first_core_rate"]) + 1
-        # 自习后置率：越高越好
-        r["selfstudy_pm_rate"] = sum(1 for j in range(n) if all_metrics[j]["selfstudy_pm_rate"] > all_metrics[i]["selfstudy_pm_rate"]) + 1
-        # 下午主科率：越低越好
-        r["pm_core_rate_rev"] = sum(1 for j in range(n) if all_metrics[j]["pm_core_rate"] < all_metrics[i]["pm_core_rate"]) + 1
-        # 主科分散违反：越少越好
-        r["core_over_rev"] = sum(1 for j in range(n) if all_metrics[j]["core_over"] < all_metrics[i]["core_over"]) + 1
-        # 教师极差：越小越好
-        r["teacher_max_span_rev"] = sum(1 for j in range(n) if all_metrics[j]["teacher_max_span"] < all_metrics[i]["teacher_max_span"]) + 1
-        # 惩罚值：越低越好
-        r["penalty_rev"] = sum(1 for j in range(n) if all_metrics[j]["penalty"] < all_metrics[i]["penalty"]) + 1
-        ranks.append(r)
-
-    # 综合评分：多维度加权（满分100）
-    # 权重：首节主科20% + 自习后置20% + 教师均衡20% + 主科分散15% + 下午主科15% + 惩罚值10%
+    # 评分：绝对质量分（所有方案用同一把尺子，不再按相对排名）
+    n_classes = len(bundle.problem.classes)
     plans: List[Plan] = []
-    for i, (sol, pen, st) in enumerate(raw):
-        m = all_metrics[i]
-        r = ranks[i]
-        n_plans = len(raw)
-
-        # 每个维度按排名换算成分数（第1名100分，最后一名70分）
-        def rank_score(rank):
-            if n_plans <= 1:
-                return 100.0
-            return 100.0 - (rank - 1) / (n_plans - 1) * 30.0
-
-        score = (
-            rank_score(r["first_core_rate"]) * 0.20 +
-            rank_score(r["selfstudy_pm_rate"]) * 0.20 +
-            rank_score(r["teacher_max_span_rev"]) * 0.20 +
-            rank_score(r["core_over_rev"]) * 0.15 +
-            rank_score(r["pm_core_rate_rev"]) * 0.15 +
-            rank_score(r["penalty_rev"]) * 0.10
-        )
-        score = round(score, 1)
-
+    for sol, pname in raw:
+        m = _calc_metrics(sol, bundle)
+        score, sub = absolute_score(m, cfg, n_classes)
         plans.append(Plan(
-            index=i + 1,
-            name=PLAN_NAMES[i % len(PLAN_NAMES)],
+            index=0,
+            name=pname,          # 名字绑定权重档位，保证「名副其实」
             score=score,
-            note=_describe(m, r, n_plans),
+            note=_describe(m, sub),
             grid=_extract_grid(sol),
+            profile=pname,
         ))
 
-    # 按评分排序（高分在前）
+    # 按评分排序（高分在前），只改编号、不改名字
     plans.sort(key=lambda p: -p.score)
-    # 重新编号
     for i, p in enumerate(plans):
         p.index = i + 1
 
