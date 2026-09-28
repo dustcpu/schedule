@@ -69,6 +69,24 @@ class CourseReq:
     weekly: int
     block_len: int = 0
     week_mode: str = "每周"
+    # 候选任课教师（有序，[0] 为贪心首选，用于求解热启动 hint）。
+    # 空列表 = 该学科不需要教师（NO_TEACHER_SUBJECTS）。
+    teacher_candidates: List[str] = field(default_factory=list)
+    # True = 「任课安排」sheet 或「特殊要求」显式指派，候选恒为 1 人
+    locked: bool = False
+
+    def __post_init__(self):
+        # 兼容只给 teacher_id 的旧构造方式（旧格式语义上等于显式指派）
+        if not self.teacher_candidates and self.teacher_id:
+            self.teacher_candidates = [self.teacher_id]
+            self.locked = True
+        if self.teacher_id is None and len(self.teacher_candidates) == 1:
+            self.teacher_id = self.teacher_candidates[0]
+
+    @property
+    def has_teacher_decision(self) -> bool:
+        """是否存在真正的教师决策空间（候选 > 1）。"""
+        return len(self.teacher_candidates) > 1
 
 
 @dataclass
@@ -79,6 +97,9 @@ class Problem:
     requirements: str = ""
     config: Config = field(default_factory=Config)
     warnings: List[str] = field(default_factory=list)
+    # (班级ID, 学科) -> 教师ID：贪心得到的预期分配。
+    # 仅用于求解热启动 hint、过载校验与回退路径，不是最终排课结果。
+    hint_assign: Dict[Tuple[str, str], str] = field(default_factory=dict)
 
     def teacher_name(self, tid: Optional[str]) -> str:
         if not tid:
@@ -205,15 +226,41 @@ def _load_teaching_assignments(ws):
     return out
 
 
-def _load_courses_old(ws, class_ids):
+def _load_courses_old(ws, class_ids, teachers=None, warnings=None, candidate_k: int = 3):
+    """旧格式（班级/教师/课程）解析。
+
+    返回 (课程列表, hint_assign)。为与新格式保持一致：
+    - 显式填了教师ID → 候选收缩为 1 人并锁定
+    - 教师ID 留空 → 按学科与工作量生成 K 位候选
+    - NO_TEACHER_SUBJECTS 内的学科统一不指定教师（此前旧格式不过滤，口径不一致）
+    """
     if ws is None:
         raise DataError("input.xlsx 缺少「课程」sheet")
     rows = _read_rows(ws)
     if not rows:
         raise DataError("「课程」sheet 为空，无法排课")
     known = set(class_ids)
-    out = []
+    teachers = teachers or {}
+    warnings = warnings if warnings is not None else []
+
+    teachers_by_subject = {}
+    for tid, t in teachers.items():
+        if t.subject:
+            teachers_by_subject.setdefault(t.subject, []).append(tid)
+    teacher_load = {tid: 0 for tid in teachers}
+
+    # 先跑一遍记账：显式填写的教师ID 先累加，避免"已指派多班仍被贪心当成最闲的人"
+    for r in rows:
+        subj = _cell_str(r.get("学科") or r.get("科目"))
+        tid = _cell_str(r.get("教师ID") or r.get("教师编号"))
+        weekly = _cell_int(r.get("周课时"), 0)
+        if tid and subj and subj not in NO_TEACHER_SUBJECTS and weekly > 0:
+            teacher_load[tid] = teacher_load.get(tid, 0) + weekly
+
+    out: List[CourseReq] = []
+    hint_assign: Dict[Tuple[str, str], str] = {}
     seen = set()
+    ignored_no_teacher = 0
     for r in rows:
         cid = _cell_str(r.get("班级ID") or r.get("班级编号"))
         subj = _cell_str(r.get("学科") or r.get("科目"))
@@ -231,13 +278,35 @@ def _load_courses_old(ws, class_ids):
             raise DataError(f"班级 {cid} 的「{subj}」周课时应为正整数")
         block_len = _cell_int(r.get("连堂节数"), 0)
         wm = _cell_str(r.get("单双周")) or "每周"
+
+        if subj in NO_TEACHER_SUBJECTS:
+            cands, locked = [], False
+            if tid:
+                ignored_no_teacher += 1
+        elif tid:
+            cands, locked = [tid], True
+        else:
+            cands = _pick_candidates(subj, teachers_by_subject, teacher_load, candidate_k)
+            locked = False
+            if cands:
+                teacher_load[cands[0]] = teacher_load.get(cands[0], 0) + weekly
+        if cands:
+            hint_assign[(cid, subj)] = cands[0]
+
         out.append(CourseReq(
-            class_id=cid, subject=subj, teacher_id=tid or None,
+            class_id=cid, subject=subj,
+            teacher_id=(cands[0] if len(cands) == 1 else None),
             weekly=weekly, block_len=block_len if block_len > 0 else 0, week_mode=wm,
+            teacher_candidates=cands, locked=locked,
         ))
+
     if not out:
         raise DataError("「课程」sheet 未解析到有效行")
-    return out
+    if ignored_no_teacher:
+        warnings.append(
+            f"旧格式：有 {ignored_no_teacher} 条「体育/艺术/班会/自习」等学科填了教师ID，"
+            f"按统一口径已忽略（这些学科不指定任课教师）")
+    return out, hint_assign
 
 
 def _parse_teacher_constraints(text, teachers, classes):
@@ -301,7 +370,55 @@ def _parse_teacher_constraints(text, teachers, classes):
     return result, unparsed
 
 
-def _generate_courses_new(classes, teachers, standards, assignments, warnings, teacher_constraints=None):
+def _pick_candidates(subj, teachers_by_subject, teacher_load, k: int) -> List[str]:
+    """按 (当前负载, 教师ID) 升序取前 k 位同学科教师。
+
+    教师ID 作为并列时的兜底排序键，保证候选顺序可复现。
+    """
+    cands = list(teachers_by_subject.get(subj, []))
+    if not cands:
+        return []
+    cands.sort(key=lambda t: (teacher_load.get(t, 0), t))
+    return cands[:k]
+
+
+def _repair_candidate_coverage(courses, teachers, k: int, teacher_load, warnings):
+    """保证每位教师至少出现在 1 条课程的候选里，避免结构性闲置。
+
+    贪心取前 K 位时，若某学科教师数 > 课程数 × K，就会有教师一次都没被选中，
+    求解器无论怎么选都轮不到他（必然闲置）。这里把他补进"候选整体最忙"的那门课。
+    """
+    appears = {}
+    for c in courses:
+        for t in c.teacher_candidates:
+            appears[t] = appears.get(t, 0) + 1
+
+    k_max = k + 1
+    added = []
+    for tid, t in teachers.items():
+        if not t.subject or tid in appears:
+            continue
+        pool = [c for c in courses
+                if c.subject == t.subject and not c.locked
+                and len(c.teacher_candidates) < k_max]
+        if not pool:
+            continue
+        # 塞进「候选整体最忙」的那门课：给最忙的人多一个可替代选项，收益最大
+        pool.sort(key=lambda c: (-sum(teacher_load.get(x, 0)
+                                      for x in c.teacher_candidates), c.class_id))
+        pool[0].teacher_candidates.append(tid)
+        appears[tid] = 1
+        added.append((tid, pool[0].class_id))
+
+    if added:
+        warnings.append(
+            f"有 {len(added)} 位教师在初始候选里一次都没出现，已强制纳入候选"
+            f"（避免该教师本周完全无课）")
+    return added
+
+
+def _generate_courses_new(classes, teachers, standards, assignments, warnings,
+                          teacher_constraints=None, candidate_k: int = 3):
     std_map = {s.subject: s for s in standards}
     assignment_map = {}
     for a in assignments:
@@ -347,34 +464,48 @@ def _generate_courses_new(classes, teachers, standards, assignments, warnings, t
         if tid in teacher_load:
             teacher_load[tid] += weekly_of.get((cid, subj), 0)
 
-    # ---- Pass C：逐条决定教师 ----
-    courses = []
+    # ---- Pass C：逐条生成候选教师（不再"定死"一人）----
+    courses: List[CourseReq] = []
+    hint_assign: Dict[Tuple[str, str], str] = {}
     auto_assigned = 0
     for ci, std, weekly in demands:
         subj = std.subject
         if subj in NO_TEACHER_SUBJECTS:
-            tid = None
+            cands, locked = [], False
         else:
             tid = assignment_map.get((ci.id, subj))
-            if not tid:
-                candidates = teachers_by_subject.get(subj, [])
-                if candidates:
-                    # 负载相同时按教师ID稳定排序，保证分配结果可复现
-                    tid = min(candidates, key=lambda t: (teacher_load.get(t, 0), t))
-                    teacher_load[tid] = teacher_load.get(tid, 0) + weekly
+            if tid:                                   # 显式指派：收缩为 1 人并锁定
+                cands, locked = [tid], True
+                teacher_load[tid] = teacher_load.get(tid, 0) + weekly
+            else:                                     # 自动：产出 K 位有序候选
+                cands = _pick_candidates(subj, teachers_by_subject,
+                                         teacher_load, candidate_k)
+                locked = False
+                if cands:
+                    # 只对【首选】记账 —— 保证 hint 与改造前的贪心结果逐条一致，
+                    # 这条一致性是后面所有阶段的回归基线。
+                    teacher_load[cands[0]] = teacher_load.get(cands[0], 0) + weekly
                     auto_assigned += 1
-                else:
-                    tid = None
+        if cands:
+            hint_assign[(ci.id, subj)] = cands[0]
         courses.append(CourseReq(
-            class_id=ci.id, subject=subj, teacher_id=tid,
+            class_id=ci.id, subject=subj,
+            teacher_id=(cands[0] if len(cands) == 1 else None),
             weekly=weekly, block_len=std.block_len, week_mode="每周",
+            teacher_candidates=cands, locked=locked,
         ))
+
+    # ---- Pass D：候选覆盖修复，消灭结构性闲置 ----
+    _repair_candidate_coverage(courses, teachers, candidate_k, teacher_load, warnings)
+
     if auto_assigned > 0:
         warnings.append(
-            f"有 {auto_assigned} 条课程未指定教师，已按学科和工作量自动分配。"
-            f"如需特殊指定，可在「特殊要求」中输入（格式：T001教C01语文）。"
+            f"有 {auto_assigned} 条课程未指定教师，已按学科与工作量各生成 "
+            f"{candidate_k} 位候选教师，由排课引擎在排课的同时决定最终任课"
+            f"（每门课恰好 1 位教师）。如需固定某位教师，"
+            f"可在「特殊要求」中输入（格式：T001教C01语文）。"
         )
-    return courses
+    return courses, hint_assign
 
 
 
@@ -394,6 +525,24 @@ def load_problem(in_dir):
     period_ws = _find_sheet(wb, ["课时标准", "课时", "period_standards"])
     is_new_format = period_ws is not None
     warnings_list = []
+
+    # 配置要早于课程生成：候选教师数 K 由 solver 配置决定
+    cfg = Config()
+    hl_path = os.path.join(in_dir, "hard_limits.json")
+    if os.path.exists(hl_path):
+        try:
+            with open(hl_path, "r", encoding="utf-8-sig") as f:
+                hl = json.load(f)
+            cfg = load_from_hard_limits(hl)
+        except Exception as e:
+            cfg = Config()
+            warnings_list.append(f"hard_limits.json 解析失败：{e}")
+
+    # 候选教师数：关闭教师决策时强制为 1（等价预分配，全链路回退）
+    candidate_k = int(getattr(cfg.solver, "teacher_candidate_k", 3) or 3)
+    if not getattr(cfg.solver, "teacher_decision", True):
+        candidate_k = 1
+    candidate_k = max(1, min(5, candidate_k))
 
     # 先读 requirements —— 教师指定必须在「生成课程」时就参与负载记账，
     # 否则已指派的教师会被贪心当成最闲的人继续压课（会导致整表无解）。
@@ -415,26 +564,17 @@ def load_problem(in_dir):
         if not standards:
             raise DataError("「课时标准」sheet 为空，无法排课")
         # 单次生成：教师指定一次传入，避免重复调用导致负载账本重置与告警重复
-        courses = _generate_courses_new(classes, teachers, standards, assignments,
-                                        warnings_list, teacher_constraints)
+        courses, hint_assign = _generate_courses_new(
+            classes, teachers, standards, assignments, warnings_list,
+            teacher_constraints, candidate_k=candidate_k)
         warnings_list.append(f"新格式：{len(standards)} 门学科标准，生成 {len(courses)} 条课程")
     else:
-        courses = _load_courses_old(
+        courses, hint_assign = _load_courses_old(
             _find_sheet(wb, ["课程", "课程表", "课时", "courses"]),
-            [c.id for c in classes])
+            [c.id for c in classes], teachers, warnings_list,
+            candidate_k=candidate_k)
 
     wb.close()
-
-    cfg = Config()
-    hl_path = os.path.join(in_dir, "hard_limits.json")
-    if os.path.exists(hl_path):
-        try:
-            with open(hl_path, "r", encoding="utf-8-sig") as f:
-                hl = json.load(f)
-            cfg = load_from_hard_limits(hl)
-        except Exception as e:
-            cfg = Config()
-            warnings_list.append(f"hard_limits.json 解析失败：{e}")
 
     # 统一应用教师指定：新格式已在生成时套用（此处幂等），
     # 旧格式此前会被静默丢弃，现按协议 §6 应用并如实告警。
@@ -442,11 +582,16 @@ def load_problem(in_dir):
         applied, skipped = 0, []
         for (cid, subj), tid in teacher_constraints.items():
             hit = [c for c in courses if c.class_id == cid and c.subject == subj]
-            if hit:
-                hit[0].teacher_id = tid
-                applied += 1
-            else:
+            if not hit:
                 skipped.append(f"{tid}教{cid}{subj}")
+                continue
+            c = hit[0]
+            # 必须收缩候选集为 1 人：只改 teacher_id 会被求解器的 y 变量覆盖
+            c.teacher_candidates = [tid]
+            c.teacher_id = tid
+            c.locked = True
+            hint_assign[(cid, subj)] = tid
+            applied += 1
         warnings_list.append(
             f"已从额外约束中解析 {len(teacher_constraints)} 条教师指定，成功应用 {applied} 条。")
         if skipped:
@@ -459,7 +604,8 @@ def load_problem(in_dir):
             f"额外约束中有 {len(unparsed_specs)} 行像是教师指定但无法解析，已忽略：{show}")
 
     p = Problem(classes=classes, teachers=teachers, courses=courses,
-                requirements=requirements, config=cfg, warnings=warnings_list)
+                requirements=requirements, config=cfg, warnings=warnings_list,
+                hint_assign=hint_assign)
     _post_process(p)
     return p
 

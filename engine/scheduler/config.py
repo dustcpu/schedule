@@ -16,6 +16,9 @@ NUM_DAYS = len(DAYS)
 # 自习作为普通格参与排课（方向共识：自习作为普通格）
 SELF_STUDY = "自习"
 
+# 术科（文档 S16「术科排下午」）：体育、艺术、实验等操作类课程
+ARTS_SUBJECTS = {"体育", "艺术", "音乐", "美术", "信息技术", "通用技术"}
+
 
 def _norm_header(s: Any) -> str:
     """表头归一化：去空格/全角空格，转字符串。"""
@@ -199,6 +202,11 @@ class SoftWeights:
     teacher_balance: int = 2    # 教师每日课时均衡（极差惩罚）
     core_morning_first: int = 1  # 第 1 节优先排主科（奖励，负惩罚）
     selfstudy_afternoon: int = 1  # 自习尽量排在下午
+    # ---- 新增（对应 docs/排课约束目录.md）----
+    core_morning: int = 1         # 文档 S5  主科优先上午：惩罚排在下午的主科
+    arts_afternoon: int = 1       # 文档 S16 术科排下午：惩罚排在上午的术科
+    no_stack: int = 1             # 文档 S12 同科不堆叠：同班同科同天 >2 节计罚
+    teacher_week_balance: int = 1  # 新增 S18 教师周课时极差均衡（量纲是节数，勿给大值）
 
     @staticmethod
     def from_dict(d: Dict[str, Any], base: "SoftWeights") -> "SoftWeights":
@@ -222,6 +230,11 @@ class SolverConfig:
     max_plans: int = 8
     workers: int = 8
     self_study_fill: bool = True    # 未指定自习课时时，自动用剩余格子补自习
+    # ---- 教师分配相关（P0：教师成为 CP-SAT 决策变量）----
+    teacher_decision: bool = True   # False = 完整退回预分配（候选强制为 1 人）
+    teacher_candidate_k: int = 3    # 每门课的候选教师数（1..5）；1 等价于预分配
+    balance_class_count: bool = True  # H26 教师带班数上下界（对称性破除）
+    assign_nogood: bool = False     # 多套方案的任课是否也要不同（默认关，避免方案数下降）
 
     @staticmethod
     def from_dict(d: Dict[str, Any], base: "SolverConfig") -> "SolverConfig":
@@ -242,24 +255,38 @@ class SolverConfig:
 #   2. 非主导项降到 0-2，否则所有档位都被默认权重拉回同一片解空间；
 #   3. 第一档 = 默认权重，作为「标准课表」参照。
 PLAN_PROFILES: List[Tuple[str, Dict[str, int]]] = [
+    # 第一档 = SoftWeights 默认值，作"标准课表"参照
     ("均衡方案", {
         "spread_core": 3, "pe_not_first_last": 2, "teacher_balance": 2,
-        "core_morning_first": 1, "selfstudy_afternoon": 1}),
+        "core_morning_first": 1, "selfstudy_afternoon": 1,
+        "core_morning": 1, "arts_afternoon": 1, "no_stack": 1,
+        "teacher_week_balance": 1}),
     ("主科优先方案", {
         "spread_core": 5, "pe_not_first_last": 1, "teacher_balance": 1,
-        "core_morning_first": 12, "selfstudy_afternoon": 1}),
+        "core_morning_first": 12, "selfstudy_afternoon": 1,
+        "core_morning": 12, "arts_afternoon": 0, "no_stack": 1,
+        "teacher_week_balance": 1}),
     ("自习后置方案", {
         "spread_core": 2, "pe_not_first_last": 1, "teacher_balance": 1,
-        "core_morning_first": 2, "selfstudy_afternoon": 12}),
+        "core_morning_first": 2, "selfstudy_afternoon": 12,
+        "core_morning": 0, "arts_afternoon": 1, "no_stack": 0,
+        "teacher_week_balance": 1}),
     ("教师均衡方案", {
         "spread_core": 2, "pe_not_first_last": 1, "teacher_balance": 15,
-        "core_morning_first": 0, "selfstudy_afternoon": 0}),
+        "core_morning_first": 0, "selfstudy_afternoon": 0,
+        "core_morning": 0, "arts_afternoon": 0, "no_stack": 0,
+        # 量纲是"节数"（约 5 倍于其他项），主导档给 6 即等效 30
+        "teacher_week_balance": 6}),
     ("分散方案", {
         "spread_core": 15, "pe_not_first_last": 8, "teacher_balance": 1,
-        "core_morning_first": 0, "selfstudy_afternoon": 0}),
+        "core_morning_first": 0, "selfstudy_afternoon": 0,
+        "core_morning": 0, "arts_afternoon": 0, "no_stack": 8,
+        "teacher_week_balance": 1}),
     ("体育错峰方案", {
         "spread_core": 2, "pe_not_first_last": 15, "teacher_balance": 3,
-        "core_morning_first": 2, "selfstudy_afternoon": 0}),
+        "core_morning_first": 2, "selfstudy_afternoon": 0,
+        "core_morning": 0, "arts_afternoon": 12, "no_stack": 0,
+        "teacher_week_balance": 1}),
 ]
 
 

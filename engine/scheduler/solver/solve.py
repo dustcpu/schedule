@@ -29,6 +29,10 @@ PLAN_NAMES = [
 GLOBAL_BUDGET = 420.0
 
 
+# 任课解：(班级ID, 学科) -> 教师ID
+Assign = Dict[Tuple[str, str], str]
+
+
 @dataclass
 class Plan:
     index: int
@@ -37,6 +41,12 @@ class Plan:
     note: str
     grid: Grid = field(default_factory=dict)
     profile: str = ""   # 该方案所用的权重档位名，保证「名副其实」
+    assign: Assign = field(default_factory=dict)   # 求解器决定的任课（P0）
+
+
+def _extract_assign(sol_y: Dict[Any, int]) -> Assign:
+    """从 y 的解里提取任课：每门课取值为 1 的那位教师。"""
+    return {(cid, s): t for (cid, s, t), v in sol_y.items() if v == 1}
 
 
 def _extract_grid(sol: Dict[Any, int]) -> Grid:
@@ -47,7 +57,8 @@ def _extract_grid(sol: Dict[Any, int]) -> Grid:
     return grid
 
 
-def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle) -> Dict[str, float]:
+def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle,
+                  sol_y: Optional[Dict[Any, int]] = None) -> Dict[str, float]:
     """计算方案的多维度指标。"""
     cfg = bundle.cfg
     x = bundle.x
@@ -103,7 +114,12 @@ def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle) -> Dict[str, float]:
             core_over += core_cnt - 2
 
     # 6. 教师日均极差
-    teacher_of = {(c.class_id, c.subject): c.teacher_id for c in bundle.problem.courses}
+    # 优先用 y 的解（求解器决定的任课）；没有 y（回退路径）才用预分配。
+    if sol_y:
+        teacher_of = _extract_assign(sol_y)
+    else:
+        teacher_of = {(c.class_id, c.subject): c.teacher_id
+                      for c in bundle.problem.courses if c.teacher_id}
     teacher_day: Dict[str, Dict[int, int]] = {}
     for k, var in x.items():
         cid, s, d, per = k
@@ -156,7 +172,7 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
     """返回 (方案列表, 求解过程 warnings, 最终状态字符串)。"""
     cfg = bundle.cfg
     warnings: List[str] = list(bundle.warnings)
-    raw: List[Tuple[Dict[Any, int], str]] = []   # (解, 方案名)
+    raw: List[Tuple[Dict[Any, int], Dict[Any, int], str]] = []   # (解x, 解y, 方案名)
 
     target = max(cfg.solver.min_plans, min(cfg.solver.max_plans, cfg.solver.num_plans))
 
@@ -205,12 +221,20 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
             continue
 
         sol = {key: solver.Value(v) for key, v in bundle.x.items()}
-        raw.append((sol, pname))
+        sol_y = {key: solver.Value(v) for key, v in bundle.y.items()}
+        raw.append((sol, sol_y, pname))
 
         # no-good：下一套方案至少要与本套相差 k 格
         ones = [bundle.x[key] for key, v in sol.items() if v == 1]
         if ones:
             bundle.model.Add(sum(ones) <= len(ones) - min(k, len(ones) - 1))
+
+        # 任课也要有差异（默认关闭）：否则多套方案课表不同、任课却可能完全一样
+        if getattr(cfg.solver, "assign_nogood", False) and sol_y:
+            k_y = max(1, round(0.03 * len(sol_y)))
+            yones = [bundle.y[key] for key, v in sol_y.items() if v == 1]
+            if yones:
+                bundle.model.Add(sum(yones) <= len(yones) - min(k_y, len(yones) - 1))
 
         if len(raw) >= target:
             break
@@ -224,8 +248,8 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
     # 评分：绝对质量分（所有方案用同一把尺子，不再按相对排名）
     n_classes = len(bundle.problem.classes)
     plans: List[Plan] = []
-    for sol, pname in raw:
-        m = _calc_metrics(sol, bundle)
+    for sol, sol_y, pname in raw:
+        m = _calc_metrics(sol, bundle, sol_y)
         score, sub = absolute_score(m, cfg, n_classes)
         plans.append(Plan(
             index=0,
@@ -234,6 +258,7 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
             note=_describe(m, sub),
             grid=_extract_grid(sol),
             profile=pname,
+            assign=_extract_assign(sol_y),
         ))
 
     # 按评分排序（高分在前），只改编号、不改名字

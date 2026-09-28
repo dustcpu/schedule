@@ -24,6 +24,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 from . import __version__ as ENGINE_VERSION
 from .config import DAYS, NUM_DAYS
+from .data.load import NO_TEACHER_SUBJECTS
 from .data.load import Problem
 from .solver.solve import Plan
 
@@ -124,7 +125,59 @@ def write_xlsx(path: str, plans: List[Plan], problem: Problem) -> None:
         for col in "BCDEF":
             w.column_dimensions[col].width = 14
 
+    # 每个方案一张任课表：课表网格保持纯学科（校验器依赖它），
+    # 任课信息单独出 sheet，避免打断 result.xlsx 的解析。
+    for p in plans:
+        _write_assign_sheet(wb, f"任课表{p.index}", p, problem, border)
+
     wb.save(path)
+
+
+def _write_assign_sheet(wb, sheet_name: str, plan: Plan, problem: Problem, border) -> None:
+    """任课表：(班级 × 学科) → 教师姓名。
+
+    重名教师写成「姓名(T012)」，便于校验器反查教师ID。
+    """
+    from collections import Counter
+
+    # 需要教师的学科（按出现顺序，保持可读）
+    subjects = []
+    seen = set()
+    for c in problem.courses:
+        if c.subject in NO_TEACHER_SUBJECTS or c.subject in seen:
+            continue
+        seen.add(c.subject)
+        subjects.append(c.subject)
+
+    name_count = Counter(t.name for t in problem.teachers.values())
+
+    def _cell_text(tid):
+        if not tid:
+            return "—"
+        t = problem.teachers.get(tid)
+        if not t:
+            return tid
+        return f"{t.name}({tid})" if name_count.get(t.name, 0) > 1 else t.name
+
+    w = wb.create_sheet(sheet_name)
+    header = ["班级ID", "班级名称"] + subjects
+    for cj, val in enumerate(header, start=1):
+        c = w.cell(row=1, column=cj, value=val)
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor=SUBHEADER_FILL)
+        c.border = border
+    for ri, ci in enumerate(problem.classes, start=2):
+        w.cell(row=ri, column=1, value=ci.id).border = border
+        w.cell(row=ri, column=2, value=(ci.name or ci.id)).border = border
+        for cj, s in enumerate(subjects, start=3):
+            tid = plan.assign.get((ci.id, s))
+            c = w.cell(row=ri, column=cj, value=_cell_text(tid))
+            c.border = border
+            c.alignment = Alignment(horizontal="center", vertical="center")
+    w.column_dimensions["A"].width = 10
+    w.column_dimensions["B"].width = 16
+    for cj in range(3, 3 + len(subjects)):
+        w.column_dimensions[w.cell(row=1, column=cj).column_letter].width = 12
 
 
 # ---------------------------------------------------------------- PDF
