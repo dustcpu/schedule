@@ -10,6 +10,7 @@
 """
 import os
 import sys
+import time
 import traceback
 
 # 保证同目录下的 scheduler 包可被 import（PyInstaller 打包后同样成立）
@@ -34,6 +35,20 @@ def _fail(out_dir: str, task_id: str, message: str, warnings=None) -> None:
         print(traceback.format_exc(), file=sys.stderr)
 
 
+def _crash(e: Exception, what: str) -> str:
+    """把内部异常转成教务老师看得懂的话术。
+
+    异常原文与 traceback 只打到 stderr（进外壳日志），不出现在 UI 上；
+    同时生成一个错误编号，便于用户报障时回溯。
+    """
+    import random
+    code = f"E-{time.strftime('%Y%m%d-%H%M%S')}-{random.randint(0, 0xffff):04x}"
+    print(f"[engine] {code} {what}失败 {type(e).__name__}: {e}", file=sys.stderr)
+    print(traceback.format_exc(), file=sys.stderr)
+    return (f"{what}时引擎内部出错，没能排出课表。请稍后重试；"
+            f"若反复出现，请把输入的 Excel 发给技术支持并附上错误编号 {code}。")
+
+
 def main() -> int:
     # 协议 §10：版本号打印到 stdout 第一行
     print(f"排课引擎 v{ENGINE_VERSION}")
@@ -56,8 +71,7 @@ def main() -> int:
         _fail(out_dir, task_id, f"数据错误：{e}")
         return 0
     except Exception as e:
-        print(traceback.format_exc(), file=sys.stderr)
-        _fail(out_dir, task_id, f"读取输入失败：{e}")
+        _fail(out_dir, task_id, _crash(e, "读取输入"))
         return 0
 
     warnings = list(problem.warnings)
@@ -68,8 +82,7 @@ def main() -> int:
         _fail(out_dir, task_id, f"数据校验未通过：{e}", warnings)
         return 0
     except Exception as e:
-        print(traceback.format_exc(), file=sys.stderr)
-        _fail(out_dir, task_id, f"数据校验出错：{e}", warnings)
+        _fail(out_dir, task_id, _crash(e, "数据校验"), warnings)
         return 0
 
     try:
@@ -77,8 +90,7 @@ def main() -> int:
         plans, solve_warnings, status = solve_plans(bundle)
         warnings.extend(solve_warnings)
     except Exception as e:
-        print(traceback.format_exc(), file=sys.stderr)
-        _fail(out_dir, task_id, f"求解过程出错：{e}", warnings)
+        _fail(out_dir, task_id, _crash(e, "排课求解"), warnings)
         return 0
 
     if not plans:
@@ -87,7 +99,8 @@ def main() -> int:
                    "常见原因：固定课与连堂冲突、教师带班过多导致同时段撞课、"
                    "某班周课时超过可用格数。请检查输入数据或放宽固定课/连堂设置。")
         elif status == "UNKNOWN":
-            msg = "在时限内未能求出可行课表（可能规模过大），请减少班级数或放宽约束后重试。"
+            msg = ("在时限内没能排完（班级或课程较多）。"
+                   "建议减少方案套数，或放宽连堂/固定课设置后重试。")
         else:
             msg = "未能生成任何可行方案。"
         _fail(out_dir, task_id, msg, warnings)
@@ -99,8 +112,7 @@ def main() -> int:
         write_pdf(os.path.join(out_dir, "result.pdf"), task_id, plans, problem,
                   problem.requirements)
     except Exception as e:
-        print(traceback.format_exc(), file=sys.stderr)
-        _fail(out_dir, task_id, f"写出结果文件失败：{e}", warnings)
+        _fail(out_dir, task_id, _crash(e, "写出结果文件"), warnings)
         return 0
 
     code = 1 if warnings else 0
