@@ -7,7 +7,7 @@
   H3 教师冲突   同一教师同一天同一节最多带 1 个班
   H4 固定课     指定 (天,节) 强制为指定学科（班会/研究性学习/校本课）
   H5 连堂       连堂学科在其连堂日恰好排 N 个连续块，且该天该科节次必须落在块内
-  H6 分科       由 input.xlsx 的科类 + 课程表决定各班的学科集合（数据层生效）
+  H6 分科       由 input.xlsx 的班级「选科」+ 课时标准决定各班的学科集合（数据层生效）
   H7 作息       节次→时钟由 config.compute_period_labels 计算（已修正 R2 午休缺失）
 
 软约束（加权惩罚进目标函数，权重可在 hard_limits.json 的 soft_weights 配置）：
@@ -205,7 +205,7 @@ def build_model(p: Problem) -> ModelBundle:
             n_t = model.NewIntVar(lo, upper, f"n_{t}")
             model.Add(n_t == sum(y[(cid, ss, t)] for (cid, ss) in pairs))
 
-    # 回退路径：无候选（如旧格式全显式指派且未启用教师决策）时保留旧的常量分组
+    # 回退路径：无候选（如全部显式指派、或未启用教师决策）时保留常量分组
     by_teacher: Dict[str, List[Tuple[str, str]]] = {}
     if not cand_of:
         for (cid, s), t in teacher_of.items():

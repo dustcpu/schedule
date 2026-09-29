@@ -1,18 +1,13 @@
 # -*- coding: utf-8 -*-
 """数据加载层：读 input.xlsx、hard_limits.json、requirements.txt。
 
-支持两种输入格式（自动检测）：
-
-【新格式 · 推荐】4个 sheet：
+input.xlsx 格式（4 个 sheet，任课安排可选）：
   Sheet「教师」：教师ID | 教师姓名 | 任教学科 | 职务
   Sheet「班级」：班级ID | 班级名称 | 年级 | 班主任 | 选科（如物化生）
   Sheet「课时标准」：学科 | 选考周课时 | 非选考周课时 | 连堂节数 | 连堂日
   Sheet「任课安排」：教师ID | 班级ID | 学科（可选，默认用教师任教学科）
 
-【旧格式 · 兼容】3个 sheet：
-  Sheet「班级」：班级ID | 班级名称 | 年级 | 科类
-  Sheet「教师」：教师ID | 教师姓名 | 任教学科
-  Sheet「课程」：班级ID | 学科 | 教师ID | 周课时 | 连堂节数 | 单双周
+旧的 3-sheet 格式（班级 / 教师 / 课程）已不再支持，检测到会给出明确提示。
 """
 import json
 import os
@@ -40,8 +35,7 @@ class ClassInfo:
     id: str
     name: str = ""
     grade: str = ""
-    track: str = ""
-    elective: str = ""
+    elective: str = ""   # 选科组合（如 物化生），决定哪些学科按「选考周课时」计
 
 
 @dataclass
@@ -68,7 +62,6 @@ class CourseReq:
     teacher_id: Optional[str]
     weekly: int
     block_len: int = 0
-    week_mode: str = "每周"
     # 候选任课教师（有序，[0] 为贪心首选，用于求解热启动 hint）。
     # 空列表 = 该学科不需要教师（NO_TEACHER_SUBJECTS）。
     teacher_candidates: List[str] = field(default_factory=list)
@@ -76,7 +69,7 @@ class CourseReq:
     locked: bool = False
 
     def __post_init__(self):
-        # 兼容只给 teacher_id 的旧构造方式（旧格式语义上等于显式指派）
+        # 兼容只给 teacher_id 的构造方式（只给一位教师语义上等于显式指派）
         if not self.teacher_candidates and self.teacher_id:
             self.teacher_candidates = [self.teacher_id]
             self.locked = True
@@ -166,7 +159,6 @@ def _load_classes(ws):
             id=cid,
             name=_cell_str(r.get("班级名称") or r.get("班级")),
             grade=_cell_str(r.get("年级")),
-            track=_cell_str(r.get("科类")),
             elective=_cell_str(r.get("选科")),
         ))
     if not out:
@@ -224,89 +216,6 @@ def _load_teaching_assignments(ws):
             "subject": _cell_str(r.get("学科") or r.get("科目")),
         })
     return out
-
-
-def _load_courses_old(ws, class_ids, teachers=None, warnings=None, candidate_k: int = 3):
-    """旧格式（班级/教师/课程）解析。
-
-    返回 (课程列表, hint_assign)。为与新格式保持一致：
-    - 显式填了教师ID → 候选收缩为 1 人并锁定
-    - 教师ID 留空 → 按学科与工作量生成 K 位候选
-    - NO_TEACHER_SUBJECTS 内的学科统一不指定教师（此前旧格式不过滤，口径不一致）
-    """
-    if ws is None:
-        raise DataError("input.xlsx 缺少「课程」sheet")
-    rows = _read_rows(ws)
-    if not rows:
-        raise DataError("「课程」sheet 为空，无法排课")
-    known = set(class_ids)
-    teachers = teachers or {}
-    warnings = warnings if warnings is not None else []
-
-    teachers_by_subject = {}
-    for tid, t in teachers.items():
-        if t.subject:
-            teachers_by_subject.setdefault(t.subject, []).append(tid)
-    teacher_load = {tid: 0 for tid in teachers}
-
-    # 先跑一遍记账：显式填写的教师ID 先累加，避免"已指派多班仍被贪心当成最闲的人"
-    for r in rows:
-        subj = _cell_str(r.get("学科") or r.get("科目"))
-        tid = _cell_str(r.get("教师ID") or r.get("教师编号"))
-        weekly = _cell_int(r.get("周课时"), 0)
-        if tid and subj and subj not in NO_TEACHER_SUBJECTS and weekly > 0:
-            teacher_load[tid] = teacher_load.get(tid, 0) + weekly
-
-    out: List[CourseReq] = []
-    hint_assign: Dict[Tuple[str, str], str] = {}
-    seen = set()
-    ignored_no_teacher = 0
-    for r in rows:
-        cid = _cell_str(r.get("班级ID") or r.get("班级编号"))
-        subj = _cell_str(r.get("学科") or r.get("科目"))
-        if not cid or not subj:
-            continue
-        if cid not in known:
-            raise DataError(f"「课程」sheet 出现未知班级ID：{cid}")
-        key = (cid, subj)
-        if key in seen:
-            raise DataError(f"「课程」sheet 中 (班级 {cid}, 学科 {subj}) 重复")
-        seen.add(key)
-        tid = _cell_str(r.get("教师ID") or r.get("教师编号"))
-        weekly = _cell_int(r.get("周课时"), 0)
-        if weekly <= 0:
-            raise DataError(f"班级 {cid} 的「{subj}」周课时应为正整数")
-        block_len = _cell_int(r.get("连堂节数"), 0)
-        wm = _cell_str(r.get("单双周")) or "每周"
-
-        if subj in NO_TEACHER_SUBJECTS:
-            cands, locked = [], False
-            if tid:
-                ignored_no_teacher += 1
-        elif tid:
-            cands, locked = [tid], True
-        else:
-            cands = _pick_candidates(subj, teachers_by_subject, teacher_load, candidate_k)
-            locked = False
-            if cands:
-                teacher_load[cands[0]] = teacher_load.get(cands[0], 0) + weekly
-        if cands:
-            hint_assign[(cid, subj)] = cands[0]
-
-        out.append(CourseReq(
-            class_id=cid, subject=subj,
-            teacher_id=(cands[0] if len(cands) == 1 else None),
-            weekly=weekly, block_len=block_len if block_len > 0 else 0, week_mode=wm,
-            teacher_candidates=cands, locked=locked,
-        ))
-
-    if not out:
-        raise DataError("「课程」sheet 未解析到有效行")
-    if ignored_no_teacher:
-        warnings.append(
-            f"旧格式：有 {ignored_no_teacher} 条「体育/艺术/班会/自习」等学科填了教师ID，"
-            f"按统一口径已忽略（这些学科不指定任课教师）")
-    return out, hint_assign
 
 
 def _parse_teacher_constraints(text, teachers, classes):
@@ -491,7 +400,7 @@ def _generate_courses_new(classes, teachers, standards, assignments, warnings,
         courses.append(CourseReq(
             class_id=ci.id, subject=subj,
             teacher_id=(cands[0] if len(cands) == 1 else None),
-            weekly=weekly, block_len=std.block_len, week_mode="每周",
+            weekly=weekly, block_len=std.block_len,
             teacher_candidates=cands, locked=locked,
         ))
 
@@ -519,12 +428,27 @@ def load_problem(in_dir):
         raise DataError("输入目录里没有 input.xlsx")
 
     wb = load_workbook(xlsx_path, data_only=True, read_only=True)
+    warnings_list = []
+
+    # 格式判定放在最前面：旧格式（班级/教师/课程 3 个 sheet）已不再支持，
+    # 要先明说，不要让用户看到「缺少课时标准 sheet」或「缺少班级 sheet」
+    # 这种指错方向的报错。
+    # 识别旧格式只能用「课程」——「课时」是「课时标准」的别名，用它判定会误判。
+    period_ws = _find_sheet(wb, ["课时标准", "课时", "period_standards"])
+    if period_ws is None:
+        legacy = _find_sheet(wb, ["课程", "课程表", "courses"])
+        wb.close()
+        if legacy is not None:
+            raise DataError(
+                "检测到旧格式输入（班级/教师/课程），本版本已不再支持。"
+                "请改用新格式：教师 / 班级 / 课时标准 / 任课安排（任课安排可选），"
+                "可从软件「下载模板」获取新格式模板后重新填写。")
+        raise DataError(
+            "input.xlsx 缺少「课时标准」sheet。新格式需要："
+            "教师 / 班级 / 课时标准（任课安排可选）。")
+
     classes = _load_classes(_find_sheet(wb, ["班级", "班级表", "classes"]))
     teachers = _load_teachers(_find_sheet(wb, ["教师", "教师表", "teachers"]))
-
-    period_ws = _find_sheet(wb, ["课时标准", "课时", "period_standards"])
-    is_new_format = period_ws is not None
-    warnings_list = []
 
     # 配置要早于课程生成：候选教师数 K 由 solver 配置决定
     cfg = Config()
@@ -557,27 +481,23 @@ def load_problem(in_dir):
     teacher_constraints, unparsed_specs = _parse_teacher_constraints(
         requirements, teachers, classes)
 
-    if is_new_format:
-        standards = _load_period_standards(period_ws)
-        assignments = _load_teaching_assignments(
-            _find_sheet(wb, ["任课安排", "任课", "teaching_assignments"]))
-        if not standards:
-            raise DataError("「课时标准」sheet 为空，无法排课")
-        # 单次生成：教师指定一次传入，避免重复调用导致负载账本重置与告警重复
-        courses, hint_assign = _generate_courses_new(
-            classes, teachers, standards, assignments, warnings_list,
-            teacher_constraints, candidate_k=candidate_k)
-        warnings_list.append(f"新格式：{len(standards)} 门学科标准，生成 {len(courses)} 条课程")
-    else:
-        courses, hint_assign = _load_courses_old(
-            _find_sheet(wb, ["课程", "课程表", "课时", "courses"]),
-            [c.id for c in classes], teachers, warnings_list,
-            candidate_k=candidate_k)
+    standards = _load_period_standards(period_ws)
+    assignments = _load_teaching_assignments(
+        _find_sheet(wb, ["任课安排", "任课", "teaching_assignments"]))
+    if not standards:
+        raise DataError("「课时标准」sheet 为空，无法排课")
+    # 单次生成：教师指定一次传入，避免重复调用导致负载账本重置与告警重复
+    courses, hint_assign = _generate_courses_new(
+        classes, teachers, standards, assignments, warnings_list,
+        teacher_constraints, candidate_k=candidate_k)
+    warnings_list.append(f"新格式：{len(standards)} 门学科标准，生成 {len(courses)} 条课程")
 
     wb.close()
 
-    # 统一应用教师指定：新格式已在生成时套用（此处幂等），
-    # 旧格式此前会被静默丢弃，现按协议 §6 应用并如实告警。
+    # 统一应用教师指定：生成课程时已套用（此处幂等），
+    # 但仍要保留——它承担两个用户可见职责：
+    #   ① 输出「已解析 N 条、成功应用 M 条」；
+    #   ② 对匹配不到的指定按协议 §6 给出 skipped 告警，避免静默丢弃。
     if teacher_constraints:
         applied, skipped = 0, []
         for (cid, subj), tid in teacher_constraints.items():
@@ -621,10 +541,6 @@ def _post_process(p):
                 p.warnings.append(f"班级 {c.class_id} 的「{c.subject}」连堂已自动取消")
                 c.block_len = 0
 
-    alt = [c for c in p.courses if c.week_mode not in ("每周", "", None)]
-    if alt:
-        p.warnings.append(f"检测到 {len(alt)} 条单双周课程，暂按每周排课")
-
     if cfg.solver.self_study_fill:
         for ci in p.classes:
             has_ss = any(c.subject == "自习" and c.class_id == ci.id for c in p.courses)
@@ -635,4 +551,4 @@ def _post_process(p):
             if rest > 0:
                 p.courses.append(CourseReq(
                     class_id=ci.id, subject="自习", teacher_id=None,
-                    weekly=rest, block_len=0, week_mode="每周"))
+                    weekly=rest, block_len=0))

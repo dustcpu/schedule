@@ -58,7 +58,7 @@ def check_plan(problem, plan) -> list:
     assign = dict(getattr(plan, "assign", None) or {})
     if not assign:
         # 只有存在"真正的决策空间"（候选 >1 人）时才算缺失；
-        # 候选恒为 1 人（旧格式/全部显式指派）时回落到 teacher_id 是合法的。
+        # 候选恒为 1 人（全部显式指派）时回落到 teacher_id 是合法的。
         if any(c.has_teacher_decision for c in problem.courses):
             # 硬断言：有多候选课程却没有任课解，说明求解/提取链断了，必须显式报错
             errs.append(
@@ -174,7 +174,7 @@ def load_result_assigns(path, problem):
 def _resolve_cid(title, classes):
     """课表标题行 → 班级ID。
 
-    export.py 写的是 f"{ci.name or ci.id}　（{选科或科类}）"，
+    export.py 写的是 f"{ci.name or ci.id}　（{选科}）"，选科为空时没有括号后缀，
     标题带后缀，不能直接当班级名用。
     """
     base = title.split("　")[0].strip()

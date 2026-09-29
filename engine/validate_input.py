@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""输入文件校验：支持新格式（教师/班级/课时标准/任课安排）和旧格式。"""
+"""输入文件校验：新格式（教师 / 班级 / 课时标准 / 任课安排）。
+
+旧的 3-sheet 格式（班级 / 教师 / 课程）已不再支持，检测到会直接给出提示。
+"""
 import json
 import sys
 import os
@@ -51,8 +54,20 @@ def validate(path):
         return headers, data
 
     period_sheet = find_sheet(["课时标准", "课时"])
-    is_new_format = period_sheet is not None
-    stats["format"] = "新格式（课时标准）" if is_new_format else "旧格式（课程表）"
+    stats["format"] = "新格式（课时标准）"
+
+    # 旧格式直接拒绝：先给一句明确的话，不要再叠一堆列缺失的错误。
+    # 识别旧格式只能用「课程」——「课时」是「课时标准」的别名，用它判定会误判。
+    if period_sheet is None:
+        wb.close()
+        if find_sheet(["课程", "课程表"]) is not None:
+            return {"valid": False, "warnings": [], "stats": stats,
+                    "errors": ["检测到旧格式输入（班级/教师/课程），本版本已不再支持。"
+                               "请改用新格式：教师 / 班级 / 课时标准 / 任课安排（任课安排可选），"
+                               "可从软件「下载模板」获取新格式模板后重新填写。"]}
+        return {"valid": False, "warnings": [], "stats": stats,
+                "errors": ["缺少「课时标准」工作表。新格式需要："
+                           "教师 / 班级 / 课时标准（任课安排可选）。"]}
 
     teacher_sheet = find_sheet(["教师", "教师表"])
     teachers = {}
@@ -102,88 +117,62 @@ def validate(path):
         wb.close()
         return {"valid": False, "errors": errors, "warnings": warnings, "stats": stats}
 
-    if is_new_format:
-        headers, rows = read_rows(wb[period_sheet])
-        for col in ["学科", "选考周课时", "非选考周课时"]:
-            if col not in headers:
-                errors.append(f"「课时标准」表缺少列：{col}")
-        if not errors:
-            standards = {}
-            for r in rows:
-                subj = str(r.get("学科") or "").strip()
-                if not subj:
-                    continue
-                try:
-                    elec = int(float(str(r.get("选考周课时") or 0)))
-                    non_elec = int(float(str(r.get("非选考周课时") or 0)))
-                except (TypeError, ValueError):
-                    errors.append(f"「课时标准」表中「{subj}」的课时格式错误")
-                    continue
-                standards[subj] = {"elective": elec, "non_elective": non_elec}
-            stats["subjects"] = len(standards)
-            if len(standards) == 0:
-                errors.append("「课时标准」表没有有效数据")
+    headers, rows = read_rows(wb[period_sheet])
+    for col in ["学科", "选考周课时", "非选考周课时"]:
+        if col not in headers:
+            errors.append(f"「课时标准」表缺少列：{col}")
+    if not errors:
+        standards = {}
+        for r in rows:
+            subj = str(r.get("学科") or "").strip()
+            if not subj:
+                continue
+            try:
+                elec = int(float(str(r.get("选考周课时") or 0)))
+                non_elec = int(float(str(r.get("非选考周课时") or 0)))
+            except (TypeError, ValueError):
+                errors.append(f"「课时标准」表中「{subj}」的课时格式错误")
+                continue
+            standards[subj] = {"elective": elec, "non_elective": non_elec}
+        stats["subjects"] = len(standards)
+        if len(standards) == 0:
+            errors.append("「课时标准」表没有有效数据")
 
-            subj_map = {"物": "物理", "化": "化学", "生": "生物", "政": "政治", "史": "历史", "地": "地理"}
-            for cid, ci in classes.items():
-                elective_set = set()
-                if ci["elective"]:
-                    for ch in ci["elective"]:
-                        if ch in subj_map:
-                            elective_set.add(subj_map[ch])
-                total = 0
-                for subj, s in standards.items():
-                    weekly = s["elective"] if subj in elective_set else s["non_elective"]
-                    total += weekly
-                if total > 40:
-                    errors.append(f"班级 {ci['name']} 周课时合计 {total} 超过可用格数 40")
-                elif total == 40:
-                    warnings.append(f"班级 {ci['name']} 周课时刚好 40，没有自习时间")
+        subj_map = {"物": "物理", "化": "化学", "生": "生物", "政": "政治", "史": "历史", "地": "地理"}
+        for cid, ci in classes.items():
+            elective_set = set()
+            if ci["elective"]:
+                for ch in ci["elective"]:
+                    if ch in subj_map:
+                        elective_set.add(subj_map[ch])
+            total = 0
+            for subj, s in standards.items():
+                weekly = s["elective"] if subj in elective_set else s["non_elective"]
+                total += weekly
+            if total > 40:
+                errors.append(f"班级 {ci['name']} 周课时合计 {total} 超过可用格数 40")
+            elif total == 40:
+                warnings.append(f"班级 {ci['name']} 周课时刚好 40，没有自习时间")
 
-        assign_sheet = find_sheet(["任课安排", "任课"])
-        if assign_sheet:
-            headers, rows = read_rows(wb[assign_sheet])
-            unknown_t = set()
-            unknown_c = set()
-            for r in rows:
-                tid = str(r.get("教师ID") or "").strip()
-                cid = str(r.get("班级ID") or "").strip()
-                if tid and tid not in teachers:
-                    unknown_t.add(tid)
-                if cid and cid not in classes:
-                    unknown_c.add(cid)
-            if unknown_t:
-                warnings.append(f"任课安排中有 {len(unknown_t)} 个教师ID在教师表中不存在")
-            if unknown_c:
-                warnings.append(f"任课安排中有 {len(unknown_c)} 个班级ID在班级表中不存在")
-            stats["assignments"] = len(rows)
-        else:
-            warnings.append("没有「任课安排」表，将按学科自动分配教师")
+    assign_sheet = find_sheet(["任课安排", "任课"])
+    if assign_sheet:
+        headers, rows = read_rows(wb[assign_sheet])
+        unknown_t = set()
+        unknown_c = set()
+        for r in rows:
+            tid = str(r.get("教师ID") or "").strip()
+            cid = str(r.get("班级ID") or "").strip()
+            if tid and tid not in teachers:
+                unknown_t.add(tid)
+            if cid and cid not in classes:
+                unknown_c.add(cid)
+        if unknown_t:
+            warnings.append(f"任课安排中有 {len(unknown_t)} 个教师ID在教师表中不存在")
+        if unknown_c:
+            warnings.append(f"任课安排中有 {len(unknown_c)} 个班级ID在班级表中不存在")
+        stats["assignments"] = len(rows)
     else:
-        course_sheet = find_sheet(["课程", "课程表", "课时"])
-        if course_sheet is None:
-            errors.append("缺少「课程」工作表")
-        else:
-            headers, rows = read_rows(wb[course_sheet])
-            for col in ["班级ID", "学科", "周课时"]:
-                if col not in headers:
-                    errors.append(f"「课程」表缺少列：{col}")
-            if not errors:
-                unknown_cids = set()
-                for r in rows:
-                    cid = str(r.get("班级ID") or "").strip()
-                    subj = str(r.get("学科") or "").strip()
-                    if cid and cid not in classes:
-                        unknown_cids.add(cid)
-                    try:
-                        weekly = int(float(str(r.get("周课时") or 0)))
-                        if weekly <= 0:
-                            errors.append(f"班级 {cid} 的「{subj}」周课时应为正整数")
-                    except (TypeError, ValueError):
-                        errors.append(f"班级 {cid} 的「{subj}」周课时格式错误")
-                if unknown_cids:
-                    errors.append(f"课程表中有 {len(unknown_cids)} 个班级ID不存在")
-                stats["courses"] = len(rows)
+        warnings.append("没有「任课安排」表，将按学科自动分配教师")
 
     wb.close()
     return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings, "stats": stats}

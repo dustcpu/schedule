@@ -444,25 +444,20 @@ fn show_tutorial(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// 仅保留新格式模板：旧的 3-sheet 模板（教师名单/班级名单/课程信息）与
+// 引擎已移除的旧格式同名易混，且它两种格式都不被引擎接受，故一并删除。
 #[tauri::command]
-fn download_template(app: tauri::AppHandle, format: Option<String>) -> Result<(), String> {
-    let fmt = format.unwrap_or_else(|| "old".to_string());
-    let (src_name, save_name) = if fmt == "new" {
-        ("input_template_new.xlsx", "排课输入模板-新格式.xlsx")
-    } else {
-        ("input_template.xlsx", "排课输入模板.xlsx")
-    };
-
+fn download_template(app: tauri::AppHandle) -> Result<(), String> {
     let save_path = app
         .dialog()
         .file()
-        .set_file_name(save_name)
+        .set_file_name("排课输入模板.xlsx")
         .add_filter("Excel 文件", &["xlsx"])
         .blocking_save_file()
         .ok_or_else(|| "已取消".to_string())?;
 
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let template_path = resource_dir.join("resources").join(src_name);
+    let template_path = resource_dir.join("resources").join("input_template.xlsx");
     let data = fs::read(&template_path).map_err(|e| format!("读取模板失败: {}", e))?;
     let save_path = save_path.as_path().ok_or("无效的保存路径")?;
     fs::write(save_path, data).map_err(|e| format!("保存模板失败: {}", e))?;

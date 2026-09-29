@@ -106,7 +106,7 @@ def write_xlsx(path: str, plans: List[Plan], problem: Problem) -> None:
         w = wb.create_sheet(f"方案{p.index}")
         r = 1
         for ci in problem.classes:
-            suffix = ci.elective or ci.track
+            suffix = ci.elective
             title_text = f"{ci.name or ci.id}　（{suffix}）" if suffix else (ci.name or ci.id)
             title = w.cell(row=r, column=1, value=title_text)
             title.font = Font(bold=True, size=12)
@@ -236,7 +236,7 @@ def write_pdf(path: str, task_id: str, plans: List[Plan], problem: Problem,
                                    title_style))
             story.append(Spacer(1, 4 * mm))
             for c in group:
-                suffix = c.elective or c.track
+                suffix = c.elective
                 class_title = f"{c.name or c.id}　（{suffix}）" if suffix else (c.name or c.id)
                 story.append(Paragraph(class_title, h2))
                 rows = _grid_rows(p, c, cfg)
