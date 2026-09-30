@@ -419,15 +419,34 @@ def _generate_courses_new(classes, teachers, standards, assignments, warnings,
 
 
 def load_problem(in_dir):
+    # 目录不存在 / 读不到：转成 DataError，给出教务老师看得懂的提示。
+    # 否则会抛 FileNotFoundError 走通用崩溃路径，用户只看到一句"引擎内部出错"。
+    try:
+        entries = sorted(os.listdir(in_dir))
+    except OSError as e:
+        # Windows 的 strerror 自带句号，去掉免得变成「路径。。」
+        reason = (e.strerror or str(e)).rstrip("。. ")
+        raise DataError(
+            f"读不到输入目录「{in_dir}」：{reason}。"
+            f"请确认该目录存在，且里面放着 input.xlsx。"
+        ) from e
+
     xlsx_path = None
-    for fn in sorted(os.listdir(in_dir)):
+    for fn in entries:
         if fn.lower().startswith("input.") and fn.lower().endswith((".xlsx", ".xlsm")):
             xlsx_path = os.path.join(in_dir, fn)
             break
     if xlsx_path is None:
         raise DataError("输入目录里没有 input.xlsx")
 
-    wb = load_workbook(xlsx_path, data_only=True, read_only=True)
+    try:
+        wb = load_workbook(xlsx_path, data_only=True, read_only=True)
+    except Exception as e:
+        # 常见于：文件正被 Excel 打开占用、或者文件已损坏
+        raise DataError(
+            f"打不开「{os.path.basename(xlsx_path)}」：{e}。"
+            f"请先关闭正在打开该文件的 Excel，或换一个没被占用的文件。"
+        ) from e
     warnings_list = []
 
     # 格式判定放在最前面：旧格式（班级/教师/课程 3 个 sheet）已不再支持，

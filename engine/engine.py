@@ -42,13 +42,35 @@ _log_file = None
 _start_time = time.time()
 
 
+def eout(msg: str) -> None:
+    """往 stdout 写一行，失败也不抛。
+
+    ⚠️ 打包成 --noconsole 的 exe 后，stdout 可能没有有效句柄；
+    调用方（外壳）若提前关闭了管道，写操作会抛 OSError [Errno 22]。
+    这里一旦让异常逃出去，PyInstaller 就会弹模态框把进程卡住等人点 Close，
+    而外壳正等着这个进程退出 —— 所以输出失败必须就地吞掉。
+    """
+    try:
+        print(msg, flush=True)
+    except Exception:
+        pass
+
+
+def eerr(msg: str) -> None:
+    """往 stderr 写一行，失败也不抛（理由同 eout）。"""
+    try:
+        print(msg, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 def elog(msg: str) -> None:
-    """写日志到 stdout 和输出目录的 engine.log"""
+    """写日志到 stdout 和输出目录的 engine.log（两条路都不能抛）"""
     global _log_file
     elapsed = time.time() - _start_time
     ts = datetime.now().strftime("%H:%M:%S")
     line = f"[{ts} +{elapsed:6.1f}s] {msg}"
-    print(line, flush=True)
+    eout(line)
     if _log_file:
         try:
             with open(_log_file, "a", encoding="utf-8") as f:
@@ -65,8 +87,8 @@ def _fail(out_dir: str, task_id: str, message: str, warnings=None) -> None:
                      message, [], warnings or [])
         elog(f"失败: {message}")
     except Exception as e:
-        print(f"[engine] 写 status.json 失败：{e}", file=sys.stderr)
-        print(traceback.format_exc(), file=sys.stderr)
+        eerr(f"[engine] 写 status.json 失败：{e}")
+        eerr(traceback.format_exc())
 
 
 def _crash(e: Exception, what: str) -> str:
@@ -77,8 +99,8 @@ def _crash(e: Exception, what: str) -> str:
     """
     import random
     code = f"E-{time.strftime('%Y%m%d-%H%M%S')}-{random.randint(0, 0xffff):04x}"
-    print(f"[engine] {code} {what}失败 {type(e).__name__}: {e}", file=sys.stderr)
-    print(traceback.format_exc(), file=sys.stderr)
+    eerr(f"[engine] {code} {what}失败 {type(e).__name__}: {e}")
+    eerr(traceback.format_exc())
     elog(f"崩溃 {code}: {what}失败 {type(e).__name__}: {e}")
     elog(traceback.format_exc())
     return (f"{what}时引擎内部出错，没能排出课表。请稍后重试；"
@@ -90,10 +112,10 @@ def main() -> int:
     _start_time = time.time()
 
     # 协议 §10：版本号打印到 stdout 第一行
-    print(f"排课引擎 v{ENGINE_VERSION}")
+    eout(f"排课引擎 v{ENGINE_VERSION}")
 
     if len(sys.argv) < 4:
-        print("用法: engine <输入目录> <输出目录> <任务ID>", file=sys.stderr)
+        eerr("用法: engine <输入目录> <输出目录> <任务ID>")
         return 0  # 进程退出码恒 0（协议 §6），但无输出目录无法写 status.json
 
     in_dir, out_dir, task_id = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -109,7 +131,7 @@ def main() -> int:
             f.write(f"任务ID: {task_id}\n")
             f.write("=" * 60 + "\n")
     except Exception as e:
-        print(f"[engine] 输出目录不可写：{e}", file=sys.stderr)
+        eerr(f"[engine] 输出目录不可写：{e}")
         return 0
 
     elog("=== 引擎启动 ===")
@@ -213,5 +235,55 @@ def main() -> int:
     return 0
 
 
+def _emergency(e: BaseException) -> None:
+    """最后一道兜底：绝不让异常逃出 main()。
+
+    ⚠️ 打包成 --noconsole 的 exe 后，未捕获异常会让 PyInstaller 的窗口模式
+    启动器弹一个模态框、进程停在那儿等人点 Close；而外壳正等着这个进程退出，
+    用户看到的就是「排课卡住不动」。所以这里一律吞掉，并尽力留下 status.json。
+    """
+    eerr(f"[engine] 未捕获异常：{type(e).__name__}: {e}")
+    eerr(traceback.format_exc())
+    out_dir = sys.argv[2] if len(sys.argv) > 2 else ""
+    task_id = sys.argv[3] if len(sys.argv) > 3 else "unknown"
+    if not out_dir:
+        return
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        write_status(os.path.join(out_dir, "status.json"), task_id, 2,
+                     "引擎内部出错，没能排出课表。请稍后重试；"
+                     "若反复出现，请把输入的 Excel 发给技术支持。",
+                     [], [])
+    except Exception:
+        pass
+
+
+def _detach_streams() -> None:
+    """退出前把 stdout / stderr 换成丢弃流。
+
+    否则解释器收尾时会再 flush 一次，而管道可能已被调用方关闭，
+    于是又抛一次 OSError（表现为进程退出码变成 120）。
+    """
+    for name in ("stdout", "stderr"):
+        old = getattr(sys, name, None)
+        try:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+        except Exception:
+            pass
+        try:
+            if old is not None:
+                old.close()     # 就地关掉，别留到解释器收尾时再炸一次
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    rc = 0
+    try:
+        rc = main()
+    except SystemExit as e:
+        rc = e.code if isinstance(e.code, int) else 0
+    except BaseException as e:      # noqa: BLE001 —— 兜底就是要抓全部
+        _emergency(e)
+    _detach_streams()
+    sys.exit(rc)
