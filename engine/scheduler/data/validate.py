@@ -4,6 +4,7 @@
 - 致命问题抛 DataError → 上层转 status.json code=2
 - 可继续但需注意的返回 warnings
 """
+import math
 from typing import Dict, List
 
 from ..config import NUM_DAYS, SELF_STUDY
@@ -87,6 +88,40 @@ def validate(p: Problem) -> List[str]:
                     f"班级 {c.class_id} 的「{c.subject}」周课时 {c.weekly} "
                     f"不足以排 {need} 节连堂"
                 )
+
+    # 3c) 连堂时段的教师数下限（结构性；最容易踩、且报错最不友好的一条）
+    #
+    #     H5 把连堂块的**起始节次**收窄成固定的几个位置（默认只能是第 1 节或第 4 节），
+    #     每个班在连堂日恰好排一个连堂块。于是 N 个班的块只能塞进 |P| 个位置里，
+    #     由鸽笼原理，至少 ⌈N/|P|⌉ 个班落在同一时段；
+    #     而 H3 要求一位教师同一时段最多带 1 个班
+    #     ⇒ 该学科至少需要 ⌈N × blocks_per_day / |P|⌉ 位教师。
+    #
+    #     不满足时模型必然无解。但教师决策打开后搜索空间很大，求解器往往拖满时限
+    #     才返回 UNKNOWN，提示语还是"建议减少方案套数"——用户会照着错的方向改。
+    #     所以在这里提前秒级判定，直接说清楚缺几位教师。
+    consec = cfg.consecutive
+    n_pos = len(consec.allow_start_periods) or 1
+    block_classes: Dict[str, set] = {}
+    for c in p.courses:
+        if c.block_len <= 1 or c.subject in NO_TEACHER_SUBJECTS:
+            continue
+        if consec.day_of(c.subject) is None:
+            continue  # 不在连堂规则内，H5 会按普通课时处理
+        block_classes.setdefault(c.subject, set()).add(c.class_id)
+
+    for subj, cids in sorted(block_classes.items()):
+        n_block = len(cids) * max(1, consec.blocks_per_day)
+        need_teachers = math.ceil(n_block / n_pos)
+        have = len(cand_of.get(subj, ()))
+        if have < need_teachers:
+            starts = "、".join(f"第{p}节" for p in consec.allow_start_periods)
+            raise DataError(
+                f"学科「{subj}」有 {len(cids)} 个班要排连堂，而连堂块只能从 {starts} 开始"
+                f"（共 {n_pos} 个位置），因此至少需要 {need_teachers} 位「{subj}」教师"
+                f"才能保证同一时段不撞课；当前只有 {have} 位。"
+                f"请增加该学科教师，或放宽连堂起始节次。"
+            )
 
     # 4) 固定课学科是否出现在课程表
     declared = {c.subject for c in p.courses}

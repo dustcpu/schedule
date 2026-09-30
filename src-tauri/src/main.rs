@@ -12,6 +12,50 @@ use tauri_plugin_dialog::DialogExt;
 /// 引擎运行超时（10 分钟后强杀进程）
 const ENGINE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+// ==================== 日志 ====================
+
+fn log_dir() -> PathBuf {
+    let p = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
+        .join("排课助手").join("logs");
+    let _ = fs::create_dir_all(&p);
+    p
+}
+
+fn log_file() -> PathBuf {
+    let now = chrono::Local::now();
+    log_dir().join(format!("{}.log", now.format("%Y-%m-%d")))
+}
+
+fn app_log(msg: &str) {
+    let now = chrono::Local::now().format("%H:%M:%S%.3f");
+    let line = format!("[{}] {}\n", now, msg);
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file())
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(line.as_bytes())
+        });
+    println!("{}", line.trim());
+}
+
+/// 把引擎日志另存一份到 %APPDATA%\排课助手\logs\。
+///
+/// 临时工作目录在排课结束后会被整个删掉，engine.log 是**唯一**记录求解过程的文件，
+/// 不留一份的话失败现场就彻底没了（此前排查"跑不出结果"只能靠推测，就是栽在这里）。
+fn preserve_engine_log(out_dir: &Path, task_id: &str) {
+    let src = out_dir.join("engine.log");
+    if !src.exists() {
+        return;
+    }
+    let dst = log_dir().join(format!("{}.engine.log", task_id));
+    match fs::copy(&src, &dst) {
+        Ok(_) => app_log(&format!("已保留引擎日志: {}", dst.display())),
+        Err(e) => app_log(&format!("保留引擎日志失败: {}", e)),
+    }
+}
+
 // ==================== 配置 ====================
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -46,10 +90,40 @@ struct HardLimits {
     classes: ClassRule,
     /// 连堂规则
     consecutive: ConsecutiveRule,
+    /// 求解器配置（传给引擎）
+    #[serde(default)]
+    solver: SolverConfig,
     /// 额外硬约束（教务老师手动输入，传给引擎）
     #[serde(default)]
     extra_constraints: String,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SolverConfig {
+    /// 单次求解时限（秒）
+    #[serde(default = "default_max_time")]
+    max_time_seconds: i32,
+    /// 每门课的候选教师数（1-5）
+    #[serde(default = "default_candidate_k")]
+    teacher_candidate_k: i32,
+    /// 目标方案数
+    #[serde(default = "default_num_plans")]
+    num_plans: i32,
+}
+
+impl Default for SolverConfig {
+    fn default() -> Self {
+        Self {
+            max_time_seconds: 60,
+            teacher_candidate_k: 5,
+            num_plans: 3,
+        }
+    }
+}
+
+fn default_max_time() -> i32 { 60 }
+fn default_candidate_k() -> i32 { 5 }
+fn default_num_plans() -> i32 { 3 }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct ScheduleRule {
@@ -156,6 +230,11 @@ impl Default for Config {
                     rule: "老师一般带2个班，一个班上午1-2节，另一个班上午4-5节".to_string(),
                     only_core_subjects: true,
                 },
+                solver: SolverConfig {
+                    max_time_seconds: 60,
+                    teacher_candidate_k: 5,
+                    num_plans: 3,
+                },
                 extra_constraints: "".to_string(),
             },
             window_state: None,
@@ -250,7 +329,13 @@ struct ValidateResult {
 fn validate_input(path: String) -> ValidateResult {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let script = Path::new(manifest_dir).join("../engine/validate_input.py");
+    // ⚠️ 必须显式指定 UTF-8 输出。
+    // 外壳是 GUI 程序、没有控制台；Python 在管道下会退回系统的 ANSI 代码页
+    // （简体中文 Windows = cp936/GBK）输出，而 Rust 这边按 UTF-8 解码，
+    // 中文就全成了乱码（「格式：新格式（课时标准）」显示成方块问号）。
     let output = Command::new("python")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
         .arg(&script)
         .arg(&path)
         .output();
@@ -464,13 +549,22 @@ fn download_template(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+// ⚠️ 必须带 (async)。
+// Tauri 官方文档：「不含 async 关键字的命令跑在主线程上，除非标了 #[tauri::command(async)]」。
+// 本函数要阻塞数分钟轮询引擎退出（循环里只有 sleep，没有任何消息泵），
+// 跑在主线程上会把 WebView 的消息循环占死 → Windows 判定窗口"未响应"。
+// 加 (async) 后改由线程池执行，主线程保持可响应。
+#[tauri::command(async)]
 fn run_scheduler(
     app: tauri::AppHandle,
     input_path: String,
     requirements: String,
     output_dir: String,
 ) -> Result<SchedulerResult, String> {
+    app_log(&format!("=== 开始排课 ==="));
+    app_log(&format!("输入文件: {} ({} bytes)", input_path, fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0)));
+    app_log(&format!("输出目录: {}", output_dir));
+
     // 校验输入文件
     let input_meta = fs::metadata(&input_path).map_err(|_| "输入文件不存在，请重新选择".to_string())?;
     if input_meta.len() == 0 {
@@ -497,6 +591,7 @@ fn run_scheduler(
     let work_dir = temp_work_dir().join(&task_id);
     let in_dir = work_dir.join("input");
     let out_dir = work_dir.join("output");
+    app_log(&format!("任务ID: {}, 工作目录: {}", task_id, work_dir.display()));
     fs::create_dir_all(&in_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
     fs::create_dir_all(&out_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
 
@@ -507,6 +602,7 @@ fn run_scheduler(
         .unwrap_or("xlsx");
     let dest_input = in_dir.join(format!("input.{}", ext));
     fs::copy(&input_path, &dest_input).map_err(|e| format!("复制输入文件失败: {}", e))?;
+    app_log(&format!("输入文件已复制到: {}", dest_input.display()));
 
     // 写 requirements.txt（用户特殊要求 + 额外硬约束）
     let cfg = load_config();
@@ -521,10 +617,15 @@ fn run_scheduler(
 
     // 写 hard_limits.json
     let cfg = load_config();
+    app_log(&format!("solver配置: max_time={}s, candidate_k={}, num_plans={}",
+        cfg.hard_limits.solver.max_time_seconds,
+        cfg.hard_limits.solver.teacher_candidate_k,
+        cfg.hard_limits.solver.num_plans));
     let hl_json = serde_json::to_string_pretty(&cfg.hard_limits)
         .map_err(|e| format!("序列化硬限制失败: {}", e))?;
     fs::write(in_dir.join("hard_limits.json"), hl_json)
         .map_err(|e| format!("写入硬限制文件失败: {}", e))?;
+    app_log("hard_limits.json 已写入");
 
     // 启动引擎
     let (program, extra_args) = build_engine_command(&app).map_err(|e| {
@@ -536,43 +637,71 @@ fn run_scheduler(
             e
         }
     })?;
+    app_log(&format!("引擎路径: {}", program));
+    app_log(&format!("引擎参数: {:?} {:?} {:?} {:?}", extra_args, in_dir, out_dir, task_id));
     let mut cmd = Command::new(&program);
     cmd.args(&extra_args);
+    // 同 validate_input：外壳没有控制台，引擎 stdout 会退回 ANSI 代码页，
+    // 日志里的中文就成了乱码。这里强制 UTF-8。
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.env("PYTHONUTF8", "1");
     cmd.arg(&in_dir);
     cmd.arg(&out_dir);
     cmd.arg(&task_id);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    let start_time = Instant::now();
     let mut child = cmd.spawn().map_err(|e| format!("启动排课引擎失败: {}", e))?;
+    let pid = child.id();
+    app_log(&format!("引擎已启动, PID={}", pid));
 
     // 轮询等待引擎退出；超过 10 分钟强杀进程
     let deadline = Instant::now() + ENGINE_TIMEOUT;
     let mut timed_out = false;
+    let mut last_log = Instant::now();
     let exit_status = loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => break Some(status),
             None => {
                 if Instant::now() >= deadline {
+                    app_log("引擎超时（10分钟），强制终止");
                     let _ = child.kill();
                     let _ = child.wait();
                     timed_out = true;
                     break None;
+                }
+                // 每30秒记录一次心跳
+                if last_log.elapsed() >= Duration::from_secs(30) {
+                    let elapsed = start_time.elapsed().as_secs();
+                    app_log(&format!("引擎运行中... PID={}, 已运行{}秒", pid, elapsed));
+                    last_log = Instant::now();
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
     };
 
+    let elapsed = start_time.elapsed().as_secs_f64();
+    app_log(&format!("引擎退出, 耗时{:.1}秒, 超时={}", elapsed, timed_out));
+
     // 读取 stdout/stderr
-    let _stdout = child.stdout.take()
+    let stdout = child.stdout.take()
         .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
         .unwrap_or_default();
     let stderr = child.stderr.take()
         .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
         .unwrap_or_default();
 
+    if !stdout.is_empty() {
+        app_log(&format!("=== 引擎stdout ===\n{}", String::from_utf8_lossy(&stdout)));
+    }
+    if !stderr.is_empty() {
+        app_log(&format!("=== 引擎stderr ===\n{}", String::from_utf8_lossy(&stderr)));
+    }
+
     if timed_out {
+        preserve_engine_log(&out_dir, &task_id);
         let _ = fs::remove_dir_all(&work_dir);
         return Ok(SchedulerResult {
             code: 2,
@@ -586,8 +715,10 @@ fn run_scheduler(
 
     // 解析 status.json
     let status_path = out_dir.join("status.json");
+    app_log(&format!("status.json 存在: {}", status_path.exists()));
     let result = if status_path.exists() {
         let s = fs::read_to_string(&status_path).map_err(|e| format!("读取排课结果失败: {}", e))?;
+        app_log(&format!("status.json 内容:\n{}", s));
         let raw: serde_json::Value =
             serde_json::from_str(&s).map_err(|_| "排课结果格式错误，请重试".to_string())?;
         let code = raw.get("code").and_then(|v| v.as_i64()).unwrap_or(2) as i32;
@@ -596,6 +727,7 @@ fn run_scheduler(
             .and_then(|v| v.as_str())
             .unwrap_or("排课完成")
             .to_string();
+        app_log(&format!("结果: code={}, message={}", code, message));
         let warnings = raw
             .get("warnings")
             .and_then(|v| v.as_array())
@@ -676,6 +808,11 @@ fn run_scheduler(
             output_pdf: None,
         }
     };
+
+    // code=0（完全成功无警告）不必留存；有警告或失败都留一份引擎日志，便于事后追溯。
+    if result.code != 0 {
+        preserve_engine_log(&out_dir, &task_id);
+    }
 
     let _ = fs::remove_dir_all(&work_dir);
 

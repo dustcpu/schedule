@@ -84,17 +84,19 @@
     const { invoke } = window.__TAURI__.core;
     const { getCurrentWindow } = window.__TAURI__.window;
 
+    const $ = id => document.getElementById(id);
+
     let inputPath = null;
     let outputDir = null;
     let currentConfig = null;
 
     // 特殊要求自动保存到 localStorage，下次打开自动恢复
+    // ⚠️ $ 必须已在上面声明：此前 $ 声明在本段之后，这里取 $ 会抛 ReferenceError，
+    //    又被下面的 try/catch 静默吞掉，导致「下次打开自动恢复」一直没生效。
     try {
       const saved = localStorage.getItem('paike_requirements');
       if (saved) $('requirements').value = saved;
     } catch (e) {}
-
-    const $ = id => document.getElementById(id);
 
     const DAY_NAMES = ['', '周一', '周二', '周三', '周四', '周五'];
 
@@ -108,6 +110,7 @@
         inputPath = currentConfig.last_input_file;
         $('file-name').textContent = inputPath;
         showFileSize(inputPath);
+        validateSelectedFile(inputPath);
       }
       renderHardLimitsSummary(currentConfig.hard_limits);
     }
@@ -129,12 +132,62 @@
       }
     }
 
+    // 输入文件预检。
+    // 说明：validate_input 命令早就注册好了，CSS 也备好了 .validate-ok / .validate-errors
+    // 等样式，但前端一直没调用，这一块从来没显示过内容——
+    // 用户只有点了「开始排课」、等上几分钟，才知道数据有问题。
+    // 这里把它接上：选完文件立刻检查，把问题挡在排课之前。
+    async function validateSelectedFile(path) {
+      const box = $('validation-result');
+      box.style.display = 'block';
+      box.innerHTML = '<div class="validate-loading">正在检查输入文件…</div>';
+
+      let r;
+      try {
+        r = await invoke('validate_input', { path });
+      } catch (e) {
+        box.innerHTML = '<div class="validate-errors">输入检查失败：' + e + '</div>';
+        return;
+      }
+
+      const parts = [];
+      const st = r.stats || {};
+      if (st.teachers != null) parts.push('教师 ' + st.teachers + ' 位');
+      if (st.classes != null) parts.push('班级 ' + st.classes + ' 个');
+      if (st.subjects != null) parts.push('学科 ' + st.subjects + ' 门');
+      if (st.assignments != null) parts.push('任课安排 ' + st.assignments + ' 条');
+
+      let html = '';
+      if (r.valid) {
+        html += '<div class="validate-ok">输入文件检查通过</div>';
+      } else {
+        html += '<div class="validate-error">输入文件有问题，请先修正再排课</div>';
+      }
+      if (st.format) {
+        html += '<div class="validate-subjects">格式：' + st.format + '</div>';
+      }
+      if (parts.length) {
+        html += '<div class="validate-stats">' +
+          parts.map(p => '<span>' + p + '</span>').join('') + '</div>';
+      }
+      if (r.errors && r.errors.length) {
+        html += '<div class="validate-errors">' +
+          r.errors.map(e => '· ' + e).join('<br>') + '</div>';
+      }
+      if (r.warnings && r.warnings.length) {
+        html += '<div class="validate-subjects" style="color:#b45309;">' +
+          r.warnings.map(w => '· ' + w).join('<br>') + '</div>';
+      }
+      box.innerHTML = html;
+    }
+
     $('btn-pick-file').onclick = async () => {
       const p = await invoke('pick_input_file');
       if (p) {
         inputPath = p;
         $('file-name').textContent = p;
         await showFileSize(p);
+        await validateSelectedFile(p);
       }
     };
 
@@ -283,7 +336,7 @@
       btn.disabled = true;
       $('btn-run-text').textContent = '排课中...';
       $('btn-spinner').classList.remove('hidden');
-      setStatus('running', '正在排课，请稍候…（预计 10-30 秒）');
+      setStatus('running', '正在排课，请稍候…（25 个班约需 3 分钟，期间请勿关闭窗口）');
       $('result-area').classList.add('hidden');
 
       try {

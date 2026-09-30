@@ -224,15 +224,15 @@ class SoftWeights:
 # ---------------------------------------------------------------- 求解参数
 @dataclass
 class SolverConfig:
-    max_time_seconds: int = 30      # 每次求解时限（远小于外壳 10 分钟总超时）
-    num_plans: int = 5              # 目标方案数（协议要求 3-8）
+    max_time_seconds: int = 60      # 每次求解时限（教师分配纳入决策后模型变大，60秒够用）
+    num_plans: int = 3              # 目标方案数（协议要求 3-8，默认3减少等待时间）
     min_plans: int = 3
     max_plans: int = 8
     workers: int = 8
     self_study_fill: bool = True    # 未指定自习课时时，自动用剩余格子补自习
     # ---- 教师分配相关（P0：教师成为 CP-SAT 决策变量）----
     teacher_decision: bool = True   # False = 完整退回预分配（候选强制为 1 人）
-    teacher_candidate_k: int = 3    # 每门课的候选教师数（1..5）；1 等价于预分配
+    teacher_candidate_k: int = 5    # 每门课的候选教师数（1..5）；1 等价于预分配；3在大班额下可能不够
     balance_class_count: bool = True  # H26 教师带班数上下界（对称性破除）
     assign_nogood: bool = False     # 多套方案的任课是否也要不同（默认关，避免方案数下降）
 

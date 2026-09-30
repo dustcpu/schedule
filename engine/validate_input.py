@@ -178,9 +178,24 @@ def validate(path):
     return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings, "stats": stats}
 
 
+def _emit(payload) -> None:
+    """把结果按 UTF-8 写到 stdout。
+
+    协议约定外壳按 UTF-8 读取；但 Windows 下 Python 往管道写时会退回系统
+    ANSI 代码页（简体中文 = cp936），中文到外壳那边就成了乱码。
+    这里直接写 UTF-8 字节，不依赖 locale / PYTHONIOENCODING 是否设对。
+    """
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    buf = getattr(sys.stdout, "buffer", None)
+    if buf is not None:
+        buf.write(data)
+        buf.flush()
+    else:
+        sys.stdout.write(data.decode("utf-8", "replace"))
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(json.dumps({"valid": False, "errors": ["缺少文件路径"], "warnings": [], "stats": {}}))
+        _emit({"valid": False, "errors": ["缺少文件路径"], "warnings": [], "stats": {}})
         sys.exit(1)
-    result = validate(sys.argv[1])
-    print(json.dumps(result, ensure_ascii=False))
+    _emit(validate(sys.argv[1]))
