@@ -108,6 +108,16 @@
 - 进度提示文案"预计 10-30 秒"与实际严重不符（25 班约需 3 分钟），改为"约需 3 分钟，期间请勿关闭窗口"。
 
 ### 变更
+- **修掉一个「全新克隆必然编不过」的老问题**：`schemars 0.8.22`（由 `tauri-build` / `tauri-utils`
+  间接引入）对 `indexmap` 只声明了 `features = ["serde-1"]`，而 `indexmap 1.9.3` 的
+  `[features]` 段里**没有 `default`**，于是它被按 **no_std** 编译 —— no_std 版本的
+  `IndexMap<K, V, S>` 没有给 `S` 预设默认类型，schemars 的
+  `pub type Map<K, V> = indexmap::IndexMap<K, V>;` 直接报 `E0107`。
+  本地一直没暴露，是因为 `target/` 里存着几周前编好的 schemars、从未重编过它；
+  一旦清缓存或别人全新 `clone`，就会撞上。
+  现在在 `src-tauri/Cargo.toml` 里显式声明
+  `indexmap = { version = "1.9.3", features = ["std"] }` 补上该特性
+  （已注释说明它不是业务依赖、**不要删**）。
 - `src-tauri/Cargo.lock` 同步：此前 `Cargo.toml` 已加 `chrono` 但 lock 未更新，
   会导致依赖被重新解析到不兼容的 `schemars 0.8.22 + indexmap 1.9.3`，
   仓库树全新编译直接报 `E0107` 编译错误。现与 `Cargo.toml` 对齐。

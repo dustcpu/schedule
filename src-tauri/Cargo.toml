@@ -10,6 +10,12 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# ⚠️ 与下面 [dependencies] 里那条是同一个原因，但**两条都必须有**：
+# schemars 0.8.22 既在"构建依赖图"里（tauri-build / tauri-plugin 的 build-dependencies）、
+# 也在"普通依赖图"里（tauri-utils）。edition 2021 默认启用 feature resolver v2，
+# **构建依赖与普通依赖的特性不共享**，所以只在 [dependencies] 里开 std 传不到构建图，
+# schemars 依然编不过。两处都声明才能真正补上。
+indexmap = { version = "1.9.3", features = ["std"] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -18,3 +24,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
 chrono = "0.4"
+
+# ⚠️ 不要删这一行：它不是业务依赖，是用来给依赖树"补特性"的。
+# schemars 0.8.22（由 tauri-build / tauri-utils 间接引入）对 indexmap 只声明了
+# features = ["serde-1"]，而 indexmap 1.9.3 的 `default` 特性是**空的**
+# （它的 [features] 段里根本没有 default 这一行），于是 indexmap 会被按 no_std 编译；
+# no_std 版本里 `IndexMap<K, V, S>` 没有给 S 设默认值，schemars 的
+#     pub type Map<K, V> = indexmap::IndexMap<K, V>;
+# 就报 E0107（"struct takes 3 generic arguments but 2 were supplied"）。
+# 这里显式启用 std，indexmap 的 build.rs 会走 CARGO_FEATURE_STD 分支、
+# 直接 emit has_std，不再依赖 autocfg 对目标平台的探测，稳定可用。
+# 实测：删掉这行后，全新 clone 的树直接编不过（老的 target 缓存会掩盖这个问题）。
+indexmap = { version = "1.9.3", features = ["std"] }

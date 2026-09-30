@@ -2149,6 +2149,7 @@ version = "0.1.4"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "indexmap 1.9.3",
  "serde",
  "serde_json",
  "tauri",
