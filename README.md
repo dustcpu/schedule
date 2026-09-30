@@ -1,6 +1,6 @@
 # 排课助手
 
-> 版本：v0.1.4
+> 版本：v0.1.6
 > 作者：Dust.
 > 技术栈：Tauri 2（Rust + 原生 HTML/CSS/JS）+ Python 排课引擎（OR-Tools CP-SAT）
 
@@ -10,7 +10,8 @@
 
 ## 功能特性
 
-- **多解输出**：一次排课生成 3-8 套方案，每套带评分和特点说明，教务老师可对比选择
+- **输入文件预检**：选完 Excel 立刻检查格式与字段，有什么问题在点「开始排课」之前就告诉你
+- **多解输出**：一次排课生成 3-8 套方案（默认 3 套），每套带评分和特点说明，教务老师可对比选择
 - **硬限制预设**：内置高二作息时间、固定课程（班会/研究性学习/校本课）、连堂规则等，可在设置中查看和修改
 - **仅语数英连堂**：默认开启，其他学科禁止连堂（包括禁止相邻排课形成"伪连堂"）
 - **额外硬约束**：设置页可输入更多约定好的硬约束，自动传给排课引擎
@@ -60,45 +61,48 @@ cargo tauri build
 schedule/
 ├── README.md                    # 本文件
 ├── CHANGELOG.md                 # 更新日志（★ 每次推送前更新）
-├── 启动-开发.bat                # Windows 一键启动开发模式
+├── 启动-开发.bat                # Windows 一键启动开发模式（cargo run）
 ├── .gitignore
 ├── docs/                        # 文档
 │   ├── 接口协议.md              # 外壳 ↔ 引擎的调用约定（算法同学必读）
 │   ├── 排课约束目录.md          # 排课约束规格（H/S/D/O/G）
-│   └── 安装说明.md              # 团队编译/环境准备
+│   └── 安装说明.md              # 团队编译 / 环境准备
 ├── src-tauri/                   # Rust 外壳
-│   ├── Cargo.toml
+│   ├── Cargo.toml / Cargo.lock
 │   ├── build.rs
-│   ├── tauri.conf.json
-│   ├── src/main.rs              # 托盘、配置、sidecar 调用、窗口事件
+│   ├── tauri.conf.json          # 版本号、窗口、打包配置
+│   ├── src/main.rs              # 托盘、配置、引擎调用、窗口事件
 │   ├── icons/icon.ico
 │   └── resources/               # 内置资源
-│       └── input_template.xlsx      # 「下载模板」按钮提供的输入模板（新格式）
+│       ├── input_template.xlsx  # 「下载模板」按钮提供的输入模板（新格式）
+│       └── engine/engine.exe    # 排课引擎（★ 由 engine/build_exe.py 生成，不入库）
 ├── ui/                          # 前端（原生 HTML/CSS/JS，无框架）
 │   ├── index.html               # 主面板
 │   ├── settings.html            # 设置页
 │   └── style.css
-├── 参考资料/                    # 排课算法文献（13 篇论文 PDF + 索引 + 付费墙清单）
-├── 测试存档/                    # 历史测试结果与分析（每次测试一个日期目录）
-└── engine/                      # 算法引擎（Python）
-    ├── engine.py                # 引擎入口
-    ├── mock_engine.py           # 开发占位引擎
-    ├── make_sample_input.py     # 生成示例输入
-    ├── verify_hard.py           # 硬约束校验工具
-    ├── input_template.md        # 输入格式说明
-    ├── scheduler/               # 引擎核心
-    │   ├── config.py            # 配置层（作息/固定课/连堂规则）
-    │   ├── export.py            # 导出层（xlsx/pdf/status.json）
-    │   ├── data/
-    │   │   ├── load.py          # 数据加载（input.xlsx 解析）
-    │   │   └── validate.py      # 数据校验
-    │   └── solver/
-    │       ├── model.py         # CP-SAT 建模（H1-H7 硬约束 + 软约束）
-    │       └── solve.py         # 求解器（多解枚举）
-    ├── test_input_25_new/       # 25班测试输入（新格式）
-    ├── test_input_25_new_req/   # 25班测试输入（新格式 + 特殊要求，验证教师指定）
-    └── reference/               # 参考资料
-        └── ly398565721/         # OR-Tools CP-SAT 参考项目
+├── engine/                      # 算法引擎（Python + OR-Tools CP-SAT）
+│   ├── engine.py                # 引擎入口：load → validate → build → solve → export
+│   ├── build_exe.py             # ★ 打包成 engine.exe（改完引擎源码必须重跑，见「协作说明」）
+│   ├── validate_input.py        # 上传后由外壳调用的输入预检（输出 JSON）
+│   ├── verify_hard.py           # 硬约束校验工具
+│   ├── mock_engine.py           # 开发占位引擎（找不到真引擎时的兜底）
+│   ├── make_sample_input.py     # 生成示例输入
+│   ├── input_template.md        # 输入字段说明与校验规则
+│   ├── scheduler/               # 引擎核心
+│   │   ├── config.py            # 配置层（作息 / 固定课 / 连堂规则 / 求解参数 / 软约束权重）
+│   │   ├── export.py            # 导出层（xlsx / pdf / status.json）
+│   │   ├── score.py             # 方案绝对质量评分
+│   │   ├── data/
+│   │   │   ├── load.py          # 读 input.xlsx / hard_limits.json / requirements.txt
+│   │   │   └── validate.py      # 求解前校验（含连堂教师数下限）
+│   │   └── solver/
+│   │       ├── model.py         # CP-SAT 建模（H1–H7 硬约束 + 软约束）
+│   │       └── solve.py         # 求解器（多解枚举）
+│   ├── test_input_25_new/       # 25 班基准测试输入（新格式，占位命名 T001 等）
+│   ├── test_input_25_new_req/   # 同上 + 特殊要求，用来验证教师指定
+│   └── reference/               # 参考实现（仅借鉴，不参与构建）
+├── 参考资料/                    # 排课算法文献（13 篇论文 PDF + 索引）
+└── 测试存档/                    # 历史测试结果与分析（每次测试一个日期目录，只记录不参与构建）
 ```
 
 ---
@@ -154,19 +158,25 @@ schedule/
 用户在界面上选 input.xlsx + 填特殊要求 + 选输出目录
                     ↓
 排课助手.exe（外壳）
-  ├─ 写 hard_limits.json（作息/固定课/连堂规则/额外硬约束）
+  ├─ 选完文件立即调 validate_input.py 预检（格式/缺列/周课时超额）
+  ├─ 写 hard_limits.json（作息 / 固定课 / 连堂规则 / 求解参数 / 额外硬约束）
   ├─ 写 requirements.txt（特殊要求 + 额外硬约束）
-  └─ 调用 engine.py <输入目录> <输出目录> <任务ID>
+  └─ 调 engine.exe <输入目录> <输出目录> <任务ID>
                     ↓
               算法引擎（Python + OR-Tools CP-SAT）
-  ├─ H1 每格唯一  H2 周课时  H3 教师冲突
-  ├─ H4 固定课    H5 连堂    H5b 非连堂学科禁止相邻
-  └─ 软约束加权（主科分散/体育不排首末/教师均衡/首节主科/自习后置）
+  ├─ H1 每格唯一  H2 周课时  H3 教师冲突（按实际任课结果校验）
+  ├─ H4 固定课    H5 连堂    H5b 非连堂学科禁止相邻    H5c 连堂学科非指定日上限
+  ├─ H25 教师任职资格        H26 教师带班数上下界
+  └─ 9 条软约束加权（主科分散 / 体育不排首末 / 教师日均均衡 / 首节主科 / 自习后置 /
+                     主科优先上午 / 术科排下午 / 同科不堆叠 / 教师周课时均衡）
                     ↓ 输出
-result.xlsx（多 sheet：总览 + 方案1~5 + 任课表1~5）
-result.pdf（多页：总览 + 每个方案一页课表）
-status.json（含 plans 数组，3-8 套多解，每套带评分和特点）
+result.xlsx（总览 + 每个方案一张「方案N」+ 一张「任课表N」）
+result.pdf（总览 + 每个方案的课表页，每页 3 个班）
+status.json（code / message / plans / warnings，plans 含每套方案的评分与特点）
 ```
+
+方案的套数由 `hard_limits.json` 的 `solver.num_plans` 决定（默认 3，最多 8）。
+25 班规模下每套方案约需 60 秒求解，**整体约 3 分钟**——这段时间界面会有进度反馈，请勿关闭窗口。
 
 详细接口约定见 [docs/接口协议.md](./docs/接口协议.md)。
 
@@ -178,21 +188,33 @@ status.json（含 plans 数组，3-8 套多解，每套带评分和特点）
 |------|------|------|
 | H1 | 每格唯一 | 每班每天每节恰好排一门课 |
 | H2 | 周课时 | 每班每科节数等于输入需求 |
-| H3 | 教师冲突 | 同一教师同一天同一节最多带1个班 |
+| H3 | 教师冲突 | 同一教师同一天同一节最多带 1 个班（按**实际任课结果**校验） |
 | H4 | 固定课 | 班会/研究性学习/校本课固定在指定节次 |
-| H5 | 连堂 | 语数英在连堂日排连续块（默认周二数学/周三语文/周四英语），**只能落在第 1-2 节或第 4-5 节** |
-| H5b | 非连堂禁止相邻 | 其他学科不能排在相邻节次（杜绝伪连堂） |
+| H5 | 连堂 | 语数英在指定日各排一个 2 节连堂块（默认周二数学/周三语文/周四英语），**起始节次只能是第 1 节或第 4 节** |
+| H5b | 非连堂禁止相邻 | 其他学科不能排在相邻节次（杜绝伪连堂）；连堂学科在非指定日同样禁止相邻 |
+| H5c | 连堂学科非指定日上限 | 周课时扣掉连堂块后，其余每天至多若干节，避免挤在少数几天 |
 | H6 | 分科 | 由输入的选科决定各班学科集合 |
 | H7 | 作息 | 节次→时钟由配置计算 |
+| H25 | 教师任职资格 | 每门课只能由同学科教师任教，且恰好一位（由求解器连同课表一起决定） |
+| H26 | 教师带班数上下界 | 限制每位教师的带班数，破除对称性、减少闲置 |
 
-软约束：主科分散、体育不排首末、教师日均均衡、首节主科、自习后置。
+软约束（共 9 条，权重按方案档位调整）：
+主科分散、体育不排首末、教师日均均衡、首节主科、自习后置、
+主科优先上午、术科排下午、同科不堆叠、教师周课时极差均衡。
+
+> ⚠️ **一条硬性下限，排课前请先核对**：H5 把连堂块的可选起始位置收窄成了固定的两个
+> （第 1-2 节 / 第 4-5 节），而 H3 要求同一位教师同一时段只能带一个班。
+> 于是 **N 个班必须有至少 ⌈N/2⌉ 位教师才排得出来** ——
+> **25 个班 ⇒ 语数英各至少 13 位教师**（13 位是"刚好够"，建议留 1 位余量）。
+> 任一科低于这条线，模型在数学上无解，引擎会直接报"至少需要 N 位某学科教师，当前只有 M 位"。
 
 ---
 
 ## 配置与数据位置
 
-- 配置：`%APPDATA%\排课助手\config.json`
-- 临时工作目录：`%APPDATA%\排课助手\temp\`（自动清理7天前文件）
+- 配置：`%APPDATA%\排课助手\config.json`（其中 `hard_limits.solver` 控制单次求解时限、目标方案数、候选教师数）
+- 日志：`%APPDATA%\排课助手\logs\YYYY-MM-DD.log`；排课失败/超时/有警告时另存一份引擎日志 `<任务ID>.engine.log`
+- 临时工作目录：`%APPDATA%\排课助手\temp\`（每次任务的输入/输出都放这里，跑完即删；自动清理 7 天前的残留）
 - 用户的输入/输出文件：完全由用户在界面上自选路径，软件不私自存副本
 
 ---
@@ -212,8 +234,30 @@ status.json（含 plans 数组，3-8 套多解，每套带评分和特点）
 - `main`：稳定版
 - **算法同学**：按 [docs/接口协议.md](./docs/接口协议.md)（调用约定）+ [docs/排课约束目录.md](./docs/排课约束目录.md)（约束规格）实现 `engine/`，参考 `engine/reference/ly398565721/` 的 CP-SAT 建模
 - **UI 同学**：改 `ui/` 目录的 HTML/CSS，或 `src-tauri/src/main.rs`
-- 提交前请用 `engine/test_input_25_new/` 跑一次完整测试，确认5套方案都生成且无硬约束违反
+- 提交前请用 `engine/test_input_25_new/` 跑一次完整测试，确认方案生成且无硬约束违反
   （⚠️ 25 班新格式求解约 2.5 分钟，留足超时）
+
+### ⚠️ 改了引擎源码？必须重新打包，否则前端**毫无变化**
+
+外壳调用的是**打包好的** `src-tauri/resources/engine/engine.exe`，不是 `engine/*.py`。
+只改 `.py` 而不重新打包，前端行为一点都不会变（这个坑 2026-09-30 踩过：加了校验却完全没生效）。
+
+```bash
+cd engine
+python build_exe.py        # 需要 pyinstaller / ortools / openpyxl / reportlab
+# 产物 engine/dist/engine.exe（约 105 MB），复制到：
+#   src-tauri/resources/engine/engine.exe
+#   src-tauri/target/debug/resources/engine/engine.exe    （存在才覆盖；dev 下 cargo run 读这份）
+```
+
+`src-tauri/resources/engine/` 在 `.gitignore` 里 —— 引擎二进制随 Release 分发，不进仓库。
+
+### 首次编译
+
+Rust 依赖较多，**全新 clone 后第一次 `cargo build` 约需 5–15 分钟**，之后增量编译约 20 秒。
+
+若报 `schemars ... E0107`，说明 `Cargo.toml` 里那两条补特性的 `indexmap` 被删了 ——
+它们**不是业务依赖，是用来修补依赖树的，不要删**（原因写在文件内的注释里）。
 
 ### 提交信息规范
 

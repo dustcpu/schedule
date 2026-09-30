@@ -16,15 +16,22 @@
 
 | 位置 | 当前值 | 说明 |
 |---|---|---|
-| `src-tauri/tauri.conf.json` | `0.1.4` | 安装包版本（外壳） |
-| `src-tauri/Cargo.toml` | `0.1.4` | Rust 包版本 |
-| `src-tauri/Cargo.lock` | `0.1.4` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
-| `README.md` | `v0.1.4` | 文档头部 |
-| `engine/scheduler/__init__.py` | `0.1.5` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
+| `src-tauri/tauri.conf.json` | `0.1.6` | 安装包版本（外壳） |
+| `src-tauri/Cargo.toml` | `0.1.6` | Rust 包版本 |
+| `src-tauri/Cargo.lock` | `0.1.6` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
+| `README.md` | `v0.1.6` | 文档头部 |
+| `ui/settings.html` | `v0.1.6` | 设置页「关于」里显示的版本号 |
+| `engine/scheduler/__init__.py` | `0.1.6` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
 
 ---
 
 ## [未发布]
+
+（暂无）
+
+---
+
+## [v0.1.6] - 2026-10-01
 
 ### 变更
 - **连堂位置收窄为只能在【1-2 节】或【4-5 节】**：原先允许的起始节次是 `[1,2,3,4]`
