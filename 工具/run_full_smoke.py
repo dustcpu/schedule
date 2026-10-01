@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """排课助手 —— 完整冒烟：用仓库合成数据真排一次 25 班，并校验交付出去的文件。
 
-用法：  D:\\python\\python.exe run_full_smoke.py
-       （由 run_checks.py --full 调起，也可以单独跑）
+用法：  D:\\python\\python.exe 工具\\run_full_smoke.py
+       （由 工具\\run_checks.py --full 调起，也可以单独跑）
 
 流程：
   1) 复制 engine/test_input_25_new/input.xlsx 到系统临时目录，配上外壳默认求解配置，
@@ -24,8 +24,8 @@ import time
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = HERE
+HERE = os.path.dirname(os.path.abspath(__file__))   # 本文件所在目录：仓库根/工具/
+REPO = os.path.dirname(HERE)                        # 仓库根
 ENGINE_DIR = os.path.join(REPO, "engine")
 SRC_XLSX = os.path.join(ENGINE_DIR, "test_input_25_new", "input.xlsx")
 VERIFY = os.path.join(ENGINE_DIR, "verify_hard.py")

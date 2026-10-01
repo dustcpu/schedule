@@ -3,11 +3,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Manager, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 /// 引擎运行超时（10 分钟后强杀进程）
@@ -554,13 +554,37 @@ fn download_template(app: tauri::AppHandle) -> Result<(), String> {
 /// 排课进度事件（问题3 外壳侧，2026-10-01）。
 ///
 /// 之前外壳是等引擎退出后才去读 stdout，排课的 3 分钟里前端完全不知道跑到哪一步；
-/// 现在边跑边读，把「阶段N/5」「方案 i/N」解析成下面这个结构推进前端画进度条。
+/// 现在边跑边读，把「阶段N/5」「方案 i/N」解析成下面这个结构给前端显示。
 #[derive(Clone, Serialize)]
 struct ProgressPayload {
     stage: i32,
     percent: i32,
     message: String,
     elapsed_sec: f64,
+}
+
+/// 最新一条进度。前端用 `get_progress` **轮询**它。
+///
+/// ⚠️ 为什么不用 Tauri 事件（`app.emit` + 前端 `listen`）：
+/// 本项目的 webview **没有配置 capabilities**（`src-tauri/capabilities/` 不存在），
+/// Tauri 2 里事件 API 属于 core 插件、要 ACL 放行，没配就会被拒绝；
+/// 而前端 `listen` 失败是**静默**的，表现就是"进度条一直停在初始文案"
+/// （2026-10-01 用户实测踩到）。应用自己的命令不走 ACL，轮询这条路是稳的。
+fn progress_slot() -> &'static Mutex<Option<ProgressPayload>> {
+    static SLOT: OnceLock<Mutex<Option<ProgressPayload>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn set_progress(p: Option<ProgressPayload>) {
+    if let Ok(mut slot) = progress_slot().lock() {
+        *slot = p;
+    }
+}
+
+/// 前端轮询用：拿最新的排课进度；没在排课就返回 null。
+#[tauri::command]
+fn get_progress() -> Option<ProgressPayload> {
+    progress_slot().lock().ok().and_then(|s| s.clone())
 }
 
 /// 取字符串开头的连续数字（引擎日志里的「阶段3/5」「方案 2/3」都靠它）。
@@ -602,15 +626,16 @@ fn parse_engine_progress(raw: &str) -> Option<ProgressPayload> {
     let elapsed = trailing_elapsed(raw);
     let msg = strip_log_prefix(raw);
 
-    // 后 3 个阶段都很短，把 30%~85% 留给最长的那一段：阶段 4 逐套方案求解
+    // ---- 阶段行：`阶段3/5: 构建CP-SAT模型...`
+    // 后 4 个阶段都很短，把 30%~85% 留给最长的那一段：阶段 4 逐套方案求解
     if let Some(pos) = msg.find("阶段") {
         if let Some(n) = leading_int(&msg[pos + "阶段".len()..]) {
             let (percent, text) = match n {
-                1 => (10, "正在读取输入文件…"),
-                2 => (18, "正在校验数据…"),
-                3 => (26, "正在构建排课模型…"),
-                4 => (30, "正在求解排课方案…"),
-                5 => (90, "正在导出结果文件…"),
+                1 => (8, "正在读取输入文件…"),
+                2 => (16, "正在校验数据（周课时总量、连堂是否有足够教师）…"),
+                3 => (24, "正在构建排课模型…"),
+                4 => (30, "正在求解排课方案（这一步最花时间）…"),
+                5 => (90, "正在导出 Excel / PDF…"),
                 _ => return None,
             };
             return Some(ProgressPayload {
@@ -622,6 +647,41 @@ fn parse_engine_progress(raw: &str) -> Option<ProgressPayload> {
         }
     }
 
+    // ---- 输入规模：`  教师数: 92, 班级数: 25, 课程数: 300`
+    if msg.contains("教师数") && msg.contains("班级数") {
+        let num = |key: &str| -> Option<i64> {
+            let i = msg.find(key)?;
+            leading_int(&msg[i + key.len()..])
+        };
+        if let (Some(t), Some(c)) = (num("教师数:"), num("班级数:")) {
+            let k = num("课程数:").unwrap_or(0);
+            return Some(ProgressPayload {
+                stage: 1,
+                percent: 14,
+                message: format!("已读取 {c} 个班、{t} 位教师、{k} 条课程"),
+                elapsed_sec: elapsed,
+            });
+        }
+    }
+
+    // ---- 导出阶段的两个细节
+    if msg.starts_with("Excel导出完成") {
+        return Some(ProgressPayload {
+            stage: 5,
+            percent: 94,
+            message: "Excel 已生成，正在生成 PDF…".to_string(),
+            elapsed_sec: elapsed,
+        });
+    }
+    if msg.starts_with("PDF导出完成") {
+        return Some(ProgressPayload {
+            stage: 5,
+            percent: 97,
+            message: "PDF 已生成，马上就好".to_string(),
+            elapsed_sec: elapsed,
+        });
+    }
+
     if msg.contains("排课完成") {
         return Some(ProgressPayload {
             stage: 5,
@@ -631,7 +691,7 @@ fn parse_engine_progress(raw: &str) -> Option<ProgressPayload> {
         });
     }
 
-    // `  方案 2/3「主科优先方案」求解中（本套预算 60 秒）...`
+    // ---- 逐套方案：`  方案 2/3「主科优先方案」求解中（本套预算 60 秒）...`
     if let Some(pos) = msg.find("方案 ") {
         let rest = &msg[pos + "方案 ".len()..];
         let idx = leading_int(rest)?;
@@ -643,25 +703,25 @@ fn parse_engine_progress(raw: &str) -> Option<ProgressPayload> {
         let finished = rest.contains("完成");
         // 30 + [0,55]，按"已完成套数"给进度
         let done = if finished { idx } else { idx - 1 };
-        let percent = 30 + (done * 55 / total) as i32;
+        let percent = (30 + (done * 55 / total) as i32).min(85);
         let name = msg
             .find('「')
             .and_then(|a| msg.find('」').map(|b| (a, b)))
             .map(|(a, b)| msg[a + '「'.len_utf8()..b].to_string())
             .unwrap_or_default();
-        let label = if name.is_empty() {
-            format!("第 {}/{} 套方案", idx, total)
+        let name_part = if name.is_empty() {
+            String::new()
         } else {
-            format!("第 {}/{} 套方案「{}」", idx, total, name)
+            format!("「{}」", name)
         };
         let message = if finished {
-            format!("{} 完成", label)
+            format!("第 {idx}/{total} 套方案{name_part}完成（用了约 {elapsed:.0} 秒）")
         } else {
-            format!("{} 求解中…", label)
+            format!("第 {idx}/{total} 套方案{name_part}求解中…（每套最多 60 秒）")
         };
         return Some(ProgressPayload {
             stage: 4,
-            percent: percent.min(85),
+            percent,
             message,
             elapsed_sec: elapsed,
         });
@@ -682,6 +742,13 @@ fn run_scheduler(
     output_dir: String,
 ) -> Result<SchedulerResult, String> {
     app_log(&format!("=== 开始排课 ==="));
+    // 让前端立刻有东西可显示（用户 2026-10-01 反馈：等了几分钟一直停在初始文案）
+    set_progress(Some(ProgressPayload {
+        stage: 0,
+        percent: 1,
+        message: "正在准备输入文件…".to_string(),
+        elapsed_sec: 0.0,
+    }));
     app_log(&format!("输入文件: {} ({} bytes)", input_path, fs::metadata(&input_path).map(|m| m.len()).unwrap_or(0)));
     app_log(&format!("输出目录: {}", output_dir));
 
@@ -786,14 +853,13 @@ fn run_scheduler(
 
     let stdout_handle = child.stdout.take().map(|pipe| {
         let buf = Arc::clone(&stdout_buf);
-        let app = app.clone();
         std::thread::spawn(move || {
             for chunk in BufReader::new(pipe).split(b'\n') {
                 let Ok(bytes) = chunk else { break };
                 let mut line = bytes;
                 line.push(b'\n');
                 if let Some(p) = parse_engine_progress(&String::from_utf8_lossy(&line)) {
-                    let _ = app.emit("scheduler-progress", p);
+                    set_progress(Some(p));
                 }
                 if let Ok(mut b) = buf.lock() {
                     b.extend_from_slice(&line);
@@ -841,6 +907,13 @@ fn run_scheduler(
 
     let elapsed = start_time.elapsed().as_secs_f64();
     app_log(&format!("引擎退出, 耗时{:.1}秒, 超时={}", elapsed, timed_out));
+    // 引擎已退出，剩下来的都是外壳自己的收尾工作
+    set_progress(Some(ProgressPayload {
+        stage: 5,
+        percent: if timed_out { 0 } else { 98 },
+        message: "正在读取排课结果…".to_string(),
+        elapsed_sec: elapsed,
+    }));
 
     // 收尾：引擎已退出，两个读取线程马上就会读到 EOF，join 一下拿到完整输出
     if let Some(h) = stdout_handle {
@@ -1082,7 +1155,8 @@ fn main() {
             download_template,
             get_file_info,
             save_window_state,
-            validate_input
+            validate_input,
+            get_progress
         ])
         .run(tauri::generate_context!())
         .expect("排课助手启动失败");
@@ -1100,11 +1174,23 @@ mod tests {
     fn progress_parses_engine_log_lines() {
         // 阶段行
         let p = parse_engine_progress("[15:16:38 +   0.0s] 阶段1/5: 加载输入文件...").unwrap();
-        assert_eq!((p.stage, p.percent), (1, 10));
+        assert_eq!((p.stage, p.percent), (1, 8));
         let p = parse_engine_progress("[15:16:38 +   0.8s] 阶段4/5: 求解排课方案...").unwrap();
         assert_eq!((p.stage, p.percent), (4, 30));
         let p = parse_engine_progress("[15:16:38 + 181.4s] 阶段5/5: 导出结果文件...").unwrap();
         assert_eq!((p.stage, p.percent), (5, 90));
+
+        // 输入规模行（应能把班级/教师数说出来，用户才知道引擎真的读进去了）
+        let p = parse_engine_progress("[t + 0.0s]   教师数: 92, 班级数: 25, 课程数: 300").unwrap();
+        assert_eq!(p.percent, 14);
+        assert!(p.message.contains("25 个班") && p.message.contains("92 位教师"),
+                "实际文案: {}", p.message);
+
+        // 导出阶段的两个细节
+        let p = parse_engine_progress("[t + 181.5s]   Excel导出完成, 耗时1.2s").unwrap();
+        assert_eq!(p.percent, 94);
+        let p = parse_engine_progress("[t + 182.0s]   PDF导出完成, 耗时0.5s").unwrap();
+        assert_eq!(p.percent, 97);
 
         // 逐方案行：求解中 / 完成
         let p = parse_engine_progress(
@@ -1132,8 +1218,9 @@ mod tests {
     fn progress_ignores_other_lines() {
         for line in [
             "[15:16:38 +   0.0s] === 引擎启动 ===",
-            "[15:16:38 +   0.0s]   教师数: 92, 班级数: 25, 课程数: 300",
+            // 注意：「教师数: …」那行是**要**被识别成进度的，见上一条测试
             "[15:16:38 +   0.0s]   加载完成, 耗时0.0s",
+            "[15:16:38 +   0.8s]   模型构建完成, 耗时0.8s",
             "[15:17:39 +  61.0s]   ...",
             "",
         ] {

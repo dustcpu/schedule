@@ -88,6 +88,9 @@ def validate(path):
                     "subject": str(r.get("任教学科") or "").strip(),
                 }
             stats["teachers"] = len(teachers)
+            # 给前端「书写规范」当真实示例：用户照文档写 T001，而他表里是 T30，
+            # 结果整条特殊要求被忽略（2026-10-01 实测）。示例必须来自他自己的表。
+            stats["teacher_ids"] = list(teachers)[:3]
             if len(teachers) == 0:
                 errors.append("「教师」表没有有效数据")
 
@@ -110,6 +113,7 @@ def validate(path):
                     "elective": str(r.get("选科") or "").strip(),
                 }
             stats["classes"] = len(classes)
+            stats["class_ids"] = list(classes)[:3]
             if len(classes) == 0:
                 errors.append("「班级」表没有有效数据")
 

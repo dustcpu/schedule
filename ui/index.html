@@ -22,7 +22,7 @@
           <li><strong>班级</strong>：班级ID、班级名称、年级、班主任、选科（如物化生、政史地）</li>
           <li><strong>课时标准</strong>：学科、选考周课时、非选考周课时、连堂节数、连堂日</li>
         </ul>
-        <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并按教师工作量均衡自动分配任课教师。如需特殊指定（如某某老师教尖子班），可在下方「特殊要求」中输入，格式：T001教C01语文。体育活动为每天第9节固定附加，不参与排课。</p>
+        <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并按教师工作量均衡自动分配任课教师。如需特殊指定（如某某老师教尖子班），可在下方「特殊要求」中输入，格式：教师ID教班级ID学科（如 T30教C05英语）。体育活动为每天第9节固定附加，不参与排课。</p>
         <button id="btn-download-template" class="ghost-btn" style="margin-top:8px;">📥 下载输入模板</button>
       </div>
     </section>
@@ -39,16 +39,20 @@
 
     <section class="card">
       <div class="step">② 特殊要求（可选）</div>
-      <textarea id="requirements" placeholder="当前支持「指定某位老师教某个班的某个学科」，每行一条，例如：&#10;· T001教C01语文&#10;· T012=C05数学&#10;· 张老师教高二(1)班英语&#10;行首加不加编号 1. 2. 都能识别；点下方「书写规范」看完整说明"></textarea>
+      <textarea id="requirements" placeholder="当前支持「指定某位老师教某个班的某个学科」，每行一条，格式：&#10;· 教师ID教班级ID学科（例如 T30教C05英语）&#10;· 行首加不加编号 1. 2. 都能识别&#10;选好输入文件后，下方「书写规范」会用你表里真实的教师ID举例"></textarea>
       <details class="spec-help">
         <summary>书写规范（点开看：支持哪些写法、哪些暂不支持）</summary>
         <div class="spec-body">
+          <p id="spec-ids" class="spec-ids">选好输入文件后，这里会用**你表里真实的**教师ID、班级ID举例。</p>
           <p class="spec-title">✔ 支持的写法：指定某位老师教某个班的某个学科</p>
           <ul>
-            <li><code>T001教C01语文</code> —— 教师ID + 班级ID + 学科（推荐，ID 以「教师」「班级」表里为准）</li>
-            <li><code>T001=C01语文</code> —— 用等号写，效果一样</li>
-            <li><code>张老师教高二(1)班英语</code> —— 也可以写教师姓名、班级名称</li>
-            <li>每行一条；行首编号写不写都行（<code>1.T001教C01语文</code> 一样能识别）</li>
+            <li><code>教师ID</code> + <code>教</code> + <code>班级ID</code> + <code>学科</code>
+                —— 例如 <code id="spec-example">T30教C05英语</code></li>
+            <li>用等号写效果一样：<code id="spec-example2">T30=C05英语</code></li>
+            <li>也可以写教师姓名 + 班级名称：<code>张老师教高二(1)班英语</code></li>
+            <li>每行一条；行首编号写不写都行（<code>1.T30教C05英语</code> 一样能识别）</li>
+            <li>⚠️ <b>ID 照抄「教师」「班级」表里的写法</b>：表里是 <code>T30</code> 就写 <code>T30</code>，
+                不要自己补成 <code>T030</code>（补零的写法现在也能认，但以表里为准最稳）</li>
           </ul>
           <p class="spec-warn">✘ 暂不支持（写了会提示"这条没生效"，不会排进课表）：</p>
           <ul>
@@ -110,38 +114,79 @@
   <script>
     const { invoke } = window.__TAURI__.core;
     const { getCurrentWindow } = window.__TAURI__.window;
-    const { listen } = window.__TAURI__.event;
 
     const $ = id => document.getElementById(id);
 
-    // ---- 排课进度条（问题3，2026-10-01）----
-    // 外壳现在边跑边读引擎输出，把「阶段N/5」「方案 i/N」推成 scheduler-progress 事件，
-    // 这里只负责画。拿不到事件通道也不影响排课，静默降级回原来的静态文字。
+    // ---- 排课进度条（2026-10-01）----
+    // ⚠️ 用「轮询 get_progress」而不是 Tauri 事件：本项目的 webview 没有配置
+    //    capabilities（src-tauri/capabilities/ 不存在），Tauri 2 里事件 API 属于
+    //    core 插件、要 ACL 放行，没配就被静默拒绝 —— 之前那版就是这样，进度条一直
+    //    停在初始文案（用户实测踩到）。应用自己的命令不走 ACL，轮询这条路是稳的。
+    let progressTimer = null;
+    let runStartedAt = 0;
+
+    function fmtElapsed(sec) {
+      if (sec < 60) return sec + ' 秒';
+      return Math.floor(sec / 60) + ' 分 ' + String(sec % 60).padStart(2, '0') + ' 秒';
+    }
+
     function showProgress() {
       $('progress').classList.remove('hidden');
       $('progress-fill').style.width = '0%';
-      $('progress-text').textContent = '正在启动排课引擎…';
+      $('progress-text').textContent = '已用 0 秒 · 正在准备…';
+      runStartedAt = Date.now();
     }
 
     function hideProgress() {
       $('progress').classList.add('hidden');
-    }
-
-    function applyProgress(p) {
-      if (!p) return;
-      const pct = Math.max(0, Math.min(100, Number(p.percent) || 0));
-      $('progress-fill').style.width = pct + '%';
-      const secs = Number(p.elapsed_sec) > 0 ? Math.round(p.elapsed_sec) + ' 秒 · ' : '';
-      $('progress-text').textContent = secs + (p.message || '') + '（' + pct + '%）';
-    }
-
-    (async () => {
-      try {
-        await listen('scheduler-progress', e => applyProgress(e.payload));
-      } catch (err) {
-        // 旧版外壳没有这个事件通道时忽略即可
+      if (progressTimer) {
+        clearInterval(progressTimer);
+        progressTimer = null;
       }
-    })();
+    }
+
+    function renderProgress(p) {
+      const elapsed = runStartedAt ? Math.round((Date.now() - runStartedAt) / 1000) : 0;
+      const pct = p ? Math.max(0, Math.min(100, Number(p.percent) || 0)) : 0;
+      $('progress-fill').style.width = pct + '%';
+      const msg = (p && p.message) ? p.message : '正在启动排课引擎…';
+      $('progress-text').textContent =
+        '已用 ' + fmtElapsed(elapsed) + ' · ' + msg + '（' + pct + '%）';
+    }
+
+    function startProgressPolling() {
+      if (progressTimer) clearInterval(progressTimer);
+      const tick = async () => {
+        try {
+          renderProgress(await invoke('get_progress'));
+        } catch (e) {
+          renderProgress(null);   // 拿不到也不影响排课，至少让计时器继续走
+        }
+      };
+      tick();
+      progressTimer = setInterval(tick, 600);
+    }
+
+    // ---- 「书写规范」用用户自己表里的真实 ID 举例 ----
+    // 用户 2026-10-01 实测：文档里举例写 T001，而他表里是 T30，照着写反而对不上、
+    // 整条要求被忽略。示例必须来自他自己的输入文件。
+    let specSamples = { teachers: [], classes: [] };
+
+    function renderSpecSamples() {
+      const t = specSamples.teachers || [];
+      const c = specSamples.classes || [];
+      const box = $('spec-ids');
+      if (t.length && c.length) {
+        $('spec-example').textContent = t[0] + '教' + c[0] + '英语';
+        $('spec-example2').textContent = t[0] + '=' + c[0] + '英语';
+        box.innerHTML = '你这份表里的写法是 —— 教师ID：<code>' + t.join('</code>、<code>') +
+          '</code>；班级ID：<code>' + c.join('</code>、<code>') + '</code>。照抄这个格式即可。';
+        box.classList.add('spec-ids-ok');
+      } else {
+        box.textContent = '选好输入文件后，这里会用你表里真实的教师ID、班级ID举例。';
+        box.classList.remove('spec-ids-ok');
+      }
+    }
 
     let inputPath = null;
     let outputDir = null;
@@ -207,8 +252,12 @@
         return;
       }
 
-      const parts = [];
-      const st = r.stats || {};
+        const parts = [];
+        const st = r.stats || {};
+        // 「书写规范」用真实 ID 举例（见 renderSpecSamples）
+        specSamples.teachers = st.teacher_ids || [];
+        specSamples.classes = st.class_ids || [];
+        renderSpecSamples();
       if (st.teachers != null) parts.push('教师 ' + st.teachers + ' 位');
       if (st.classes != null) parts.push('班级 ' + st.classes + ' 个');
       if (st.subjects != null) parts.push('学科 ' + st.subjects + ' 门');
@@ -395,6 +444,7 @@
       $('btn-spinner').classList.remove('hidden');
       setStatus('running', '正在排课，请稍候…（25 个班约需 3 分钟，期间请勿关闭窗口）');
       showProgress();
+      startProgressPolling();
       $('result-area').classList.add('hidden');
 
       try {

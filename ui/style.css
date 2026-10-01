@@ -193,6 +193,14 @@ textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
 }
 .spec-title { color: var(--success); margin: 4px 0; }
 .spec-warn { color: var(--warn); margin: 6px 0 2px; }
+.spec-ids {
+  margin: 2px 0 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: #f8fafc;
+  border: 1px solid var(--border);
+}
+.spec-ids-ok { background: #f0fdf4; border-color: #bbf7d0; }
 
 .result.hidden { display: none; }
 .result ul {

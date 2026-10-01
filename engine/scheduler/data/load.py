@@ -252,6 +252,66 @@ def _load_teaching_assignments(ws):
     return out
 
 
+def _id_key(s):
+    """把 T030 / t30 / T30 归一成同一个键（前缀大写 + 数字去前导零）。"""
+    m = re.match(r'^([A-Za-z]*)(\d+)$', str(s).strip())
+    return (m.group(1).upper(), m.group(2).lstrip('0')) if m else None
+
+
+def _ids_matching(token, ids):
+    """和 token 只差前导零的那些 ID（T030 → T30）。"""
+    key = _id_key(token)
+    if key is None:
+        return []
+    return [i for i in ids if _id_key(i) == key]
+
+
+def _resolve_id(token, ids):
+    """ID 查找：先精确匹配，再容忍"补零/去零"的写法。
+
+    学校的教师/班级编号常见 T30 与 T030 混写。用户照文档写 T030，而表里是 T30，
+    整条特殊要求就被忽略了（2026-10-01 实测）。这里只在**唯一匹配**时才接受，
+    避免把 T3 误认成 T30 或 T31。
+    """
+    if token in ids:
+        return token
+    hits = _ids_matching(token, ids)
+    return hits[0] if len(hits) == 1 else None
+
+
+def _explain_unparsed(line, teachers, classes):
+    """给"解析不了"的一行找一句"该怎么办"的话；确定不了就返回 None。
+
+    只报"无法解析"对用户没有帮助 —— 他明明照着文档写了（2026-10-01 实测）。
+    """
+    m = re.match(r'^(.+?)\s*[=教]\s*(.+)$', line)
+    if not m:
+        return None
+    t_str = m.group(1).strip()
+    rest = m.group(2).strip()
+
+    known_names = {t.name for t in teachers.values()}
+    if t_str not in teachers and t_str not in known_names and _resolve_id(t_str, list(teachers)) is None:
+        near = _ids_matching(t_str, list(teachers))
+        tip = f"，表里有「{near[0]}」，是不是想写它？" if near else ""
+        return (f"「{t_str}」不在「教师」表里{tip}。"
+                f"教师ID 要照抄「教师」表里的写法（别自己补零或去零）")
+
+    # 教师能对上 → 问题多半出在班级
+    class_ids = [c.id for c in classes]
+    cm = re.match(r'^(C\d+)', rest)
+    if cm:
+        cid = cm.group(1)
+    else:
+        cid = next((c.id for c in classes if rest.startswith(c.name or c.id)), None)
+    if cid is None or _resolve_id(cid, class_ids) is None:
+        near = _ids_matching(rest[:4], class_ids)
+        tip = f"（表里有「{near[0]}」）" if near else ""
+        return (f"没能从「{rest}」里认出班级ID{tip}。"
+                f"写法是 教师ID教班级ID学科（例：{t_str}教{class_ids[0] if class_ids else 'C01'}语文）")
+    return None
+
+
 def _parse_teacher_constraints(text, teachers, classes):
     """从额外约束文本中解析教师指定。
 
@@ -306,6 +366,9 @@ def _parse_teacher_constraints(text, teachers, classes):
         rest = m.group(2).strip()
         tid = t_str if t_str in teachers else name_to_tid.get(t_str)
         if not tid:
+            # 容忍 T030 ↔ T30 这类"补零/去零"的写法差异
+            tid = _resolve_id(t_str, list(teachers))
+        if not tid:
             unparsed.append(line)
             continue
         cid = None
@@ -320,6 +383,8 @@ def _parse_teacher_constraints(text, teachers, classes):
                     cid = cid_tmp
                     subj = normalize_subject(rest[len(cname):].strip())
                     break
+        if cid and cid not in class_ids:
+            cid = _resolve_id(cid, list(class_ids))     # 同样容忍 C01 ↔ C1
         if not cid or cid not in class_ids:
             unparsed.append(line)
             continue
@@ -614,9 +679,24 @@ def load_problem(in_dir):
             warnings_list.append(f"以下教师指定在课程表中找不到对应条目，已忽略：{show}")
 
     if unparsed_specs:
-        show = "、".join(unparsed_specs[:3]) + ("…" if len(unparsed_specs) > 3 else "")
-        warnings_list.append(
-            f"额外约束中有 {len(unparsed_specs)} 行像是教师指定但无法解析，已忽略：{show}")
+        # 尽量说清"该怎么办"，而不是只丢一句"无法解析"：
+        # 用户 2026-10-01 照着书写规范写，结果被忽略，且看不出哪里写错了。
+        explained = 0
+        for line in unparsed_specs:
+            if explained >= 3:
+                break
+            why = _explain_unparsed(line, teachers, classes)
+            if why:
+                warnings_list.append(f"「{line}」没生效：{why}")
+                explained += 1
+        if explained == 0:
+            show = "、".join(unparsed_specs[:3]) + ("…" if len(unparsed_specs) > 3 else "")
+            warnings_list.append(
+                f"额外约束中有 {len(unparsed_specs)} 行像是教师指定但无法解析，已忽略：{show}"
+                f"（正确写法：教师ID教班级ID学科，例如 T30教C05英语）")
+        if len(unparsed_specs) > explained:
+            warnings_list.append(
+                f"另有 {len(unparsed_specs) - explained} 行教师指定没能解析，已忽略。")
 
     if unsupported_specs:
         show = "；".join(unsupported_specs[:3]) + ("…" if len(unsupported_specs) > 3 else "")

@@ -20,12 +20,13 @@ import sys
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.abspath(__file__))   # 本文件所在目录：仓库根/工具/
+REPO = os.path.dirname(HERE)                        # 仓库根
 FULL = "--full" in sys.argv
 
-SCRIPTS_DIR_1 = os.path.join(HERE, "测试存档", "2026-10-01-用户实测问题复现", "复现脚本")
-SCRIPTS_DIR_2 = os.path.join(HERE, "测试存档", "2026-10-01-引擎异常兜底加固", "复现脚本")
-ENGINE_EXE = os.path.join(HERE, "engine", "dist", "engine.exe")
+SCRIPTS_DIR_1 = os.path.join(REPO, "测试存档", "2026-10-01-用户实测问题复现", "复现脚本")
+SCRIPTS_DIR_2 = os.path.join(REPO, "测试存档", "2026-10-01-引擎异常兜底加固", "复现脚本")
+ENGINE_EXE = os.path.join(REPO, "engine", "dist", "engine.exe")
 
 results = []
 
@@ -93,11 +94,11 @@ run_script(
 if FULL:
     run_script(
         "4) 25 班完整排课 + verify_hard 校验交付文件",
-        os.path.join(SCRIPTS_DIR_2, "..", "..", "..", "run_full_smoke.py"),
+        os.path.join(HERE, "run_full_smoke.py"),
         expect=["交付文件校验通过"],
     )
-elif not os.path.exists(os.path.join(HERE, "run_full_smoke.py")):
-    print("\n（提示：要跑 3 分钟的完整冒烟，请执行  python run_checks.py --full）")
+else:
+    print("\n（提示：要跑约 3 分钟的完整冒烟，请执行：python run_checks.py --full）")
 
 # ---- 汇总 ----
 print("\n" + "=" * 78)
