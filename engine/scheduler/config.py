@@ -17,7 +17,7 @@ NUM_DAYS = len(DAYS)
 SELF_STUDY = "自习"
 
 # 术科（文档 S16「术科排下午」）：体育、艺术、实验等操作类课程
-ARTS_SUBJECTS = {"体育", "艺术", "音乐", "美术", "信息技术", "通用技术"}
+ARTS_SUBJECTS = {"体育", "艺术", "音乐", "美术", "信息", "信息技术", "通用技术"}
 
 
 def _norm_header(s: Any) -> str:

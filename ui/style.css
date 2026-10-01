@@ -167,6 +167,33 @@ textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
   color: var(--text-dim);
 }
 
+/* ---- 「特殊要求」书写规范（2026-10-01）---- */
+.spec-help {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  background: var(--card);
+}
+.spec-help summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--primary);
+}
+.spec-help[open] summary { margin-bottom: 6px; }
+.spec-body ul { margin: 4px 0 8px 18px; padding: 0; }
+.spec-body li { margin: 2px 0; }
+.spec-body code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: Consolas, "Courier New", monospace;
+}
+.spec-title { color: var(--success); margin: 4px 0; }
+.spec-warn { color: var(--warn); margin: 6px 0 2px; }
+
 .result.hidden { display: none; }
 .result ul {
   list-style: none;

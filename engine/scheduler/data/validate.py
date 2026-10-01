@@ -42,8 +42,8 @@ def validate(p: Problem) -> List[str]:
                 f"班级 {c.class_id} 的「{c.subject}」没有可用任课教师"
                 f"（「教师」sheet 中任教学科为「{c.subject}」的教师为 0 人），无法排课。"
                 f"若「{c.subject}」是不需要教师的课（如信息、心理、书法、劳动等），"
-                f"请检查学科名写法是否与「教师」sheet 一致；也可把该学科改名成常见写法"
-                f"（如「信息技术」），或在「教师」sheet 为其补一位教师。"
+                f"请检查学科名写法是否与「教师」sheet 一致；也可把该学科改成常见写法"
+                f"（如「信息」「心理」），或在「教师」sheet 为其补一位教师。"
             )
         cand_of.setdefault(c.subject, set()).update(cands)
 
