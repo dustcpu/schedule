@@ -217,7 +217,10 @@ def load_result_grids(path, classes, periods):
                 if cur is None or per not in periods:
                     continue
                 for i, d in enumerate(range(1, NUM_DAYS + 1), start=1):
-                    grid[(cur, d, per)] = cells[i]
+                    val = cells[i]
+                    # 问题4（2026-10-01）：课表格子自本版起为「学科\n教师」两行，
+                    # 校验只认学科 —— 必须取第一行，否则 H1–H5 全部误判。
+                    grid[(cur, d, per)] = val.split("\n")[0].strip()
         out[sn] = grid
     return out
 

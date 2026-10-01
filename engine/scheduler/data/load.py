@@ -14,7 +14,33 @@ import os
 import re
 
 # 这些科目在课表上不显示教师姓名，也不需要在任课安排中指定
-NO_TEACHER_SUBJECTS = {"体育", "体育活动", "艺术", "音乐", "美术", "信息技术", "通用技术", "心理", "班会", "研究性学习", "校本课", "自习"}
+NO_TEACHER_SUBJECTS = {"体育", "体育活动", "艺术", "音乐", "美术", "信息技术", "通用技术", "心理", "班会", "研究性学习", "校本课", "自习", "书法", "劳动", "生涯规划"}
+
+# 问题1（2026-10-01 实测）：学校填的学科名写法五花八门（信息课/信息/信息技术…），
+# 白名单是精确字符串匹配，漏一个别名就把整套排课卡死在阶段 2。
+# 与其穷举别名，不如在读取入口统一归一化到标准名。
+_SUBJECT_ALIASES = {
+    "信息": "信息技术", "信息课": "信息技术", "计算机": "信息技术", "电脑": "信息技术", "信息技术课": "信息技术",
+    "心理健康": "心理", "心理课": "心理", "心理健康课": "心理",
+    "体育课": "体育", "体育与健康": "体育",
+    "美术课": "美术", "音乐课": "音乐", "艺术课": "艺术",
+    "班会课": "班会", "自习课": "自习",
+    "劳动课": "劳动", "劳技": "劳动",
+    "书法课": "书法",
+    "生涯规划课": "生涯规划",
+}
+
+
+def normalize_subject(name: str) -> str:
+    """学科名归一化：常见别名/口语写法 → 标准名；未知名原样返回。"""
+    if not name:
+        return name
+    n = str(name).strip()
+    if not n:
+        return n
+    if n in _SUBJECT_ALIASES:
+        return _SUBJECT_ALIASES[n]
+    return n
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -177,7 +203,7 @@ def _load_teachers(ws):
         out[tid] = TeacherInfo(
             id=tid,
             name=_cell_str(r.get("教师姓名") or r.get("姓名")) or tid,
-            subject=_cell_str(r.get("任教学科") or r.get("学科")),
+            subject=normalize_subject(_cell_str(r.get("任教学科") or r.get("学科"))),
             duty=_cell_str(r.get("职务")),
         )
     return out
@@ -192,7 +218,7 @@ def _load_period_standards(ws):
         if not subj:
             continue
         out.append(PeriodStandard(
-            subject=subj,
+            subject=normalize_subject(subj),
             elective_periods=_cell_int(r.get("选考周课时") or r.get("选考课时"), 0),
             non_elective_periods=_cell_int(r.get("非选考周课时") or r.get("非选考课时"), 0),
             block_len=_cell_int(r.get("连堂节数"), 0),
@@ -213,7 +239,7 @@ def _load_teaching_assignments(ws):
         out.append({
             "teacher_id": tid,
             "class_id": cid,
-            "subject": _cell_str(r.get("学科") or r.get("科目")),
+            "subject": normalize_subject(_cell_str(r.get("学科") or r.get("科目"))),
         })
     return out
 
@@ -227,24 +253,35 @@ def _parse_teacher_constraints(text, teachers, classes):
     """
     result = {}
     unparsed: List[str] = []
+    unsupported: List[str] = []
     if not text:
-        return result, unparsed
+        return result, unparsed, unsupported
     text = text.lstrip('\ufeff')
     name_to_tid = {t.name: tid for tid, t in teachers.items()}
     cname_to_cid = {c.name: c.id for c in classes}
     all_subjects = set(t.subject for t in teachers.values() if t.subject)
     class_ids = {c.id for c in classes}
+    # 2a: 用户习惯像记笔记一样写「1.」「1、」「（1）」「①」「- 」等列表标记，
+    # 不剥掉的话「1.T30教C05数学」里第一个「教」之前是「1.T30」，匹配不到教师 → 整行丢弃。
+    list_mark_re = re.compile(r'^\s*(?:[（(]?\d{1,3}[）).、:：]?|[-*•]|[①-⑳])\s*')
     for line in text.splitlines():
+        raw = line
         line = line.strip().lstrip('\ufeff')
         if not line:
             continue
         line = re.sub(r'^[指定：\s]+', '', line)
+        line = list_mark_re.sub('', line)
+        if not line:
+            continue
         m = re.match(r'^(.+?)\s*[=教]\s*(.+)$', line)
         if not m:
-            # 只有「看起来像教师指定」（含 = 或 教）才计入未解析，
-            # 否则「年级：高二」「测试用例」这类普通说明会被误报。
+            # 2c: 不再静默丢弃。区分两类未生效：
+            #   含「教/=」→ 像教师指定但语法看不懂；以编号/列表标记开头 → 明显在写约束清单，
+            #   但要求类型（如"某班每周加一节 X"）当前不支持。普通说明（如「年级：高二」）不打扰。
             if re.search(r'[=教]', line):
                 unparsed.append(line)
+            elif list_mark_re.match(raw.strip()):
+                unsupported.append(raw.strip())
             continue
         t_str = m.group(1).strip()
         rest = m.group(2).strip()
@@ -253,7 +290,7 @@ def _parse_teacher_constraints(text, teachers, classes):
             unparsed.append(line)
             continue
         cid = None
-        subj = rest
+        subj = normalize_subject(rest)
         cm = re.match(r'^(C\d+)\s*(.*)$', rest)
         if cm:
             cid = cm.group(1)
@@ -262,7 +299,7 @@ def _parse_teacher_constraints(text, teachers, classes):
             for cname, cid_tmp in cname_to_cid.items():
                 if rest.startswith(cname):
                     cid = cid_tmp
-                    subj = rest[len(cname):].strip()
+                    subj = normalize_subject(rest[len(cname):].strip())
                     break
         if not cid or cid not in class_ids:
             unparsed.append(line)
@@ -276,7 +313,7 @@ def _parse_teacher_constraints(text, teachers, classes):
             result[(cid, matched)] = tid
         else:
             unparsed.append(line)
-    return result, unparsed
+    return result, unparsed, unsupported
 
 
 def _pick_candidates(subj, teachers_by_subject, teacher_load, k: int) -> List[str]:
@@ -497,7 +534,7 @@ def load_problem(in_dir):
                 requirements = f.read().strip()
         except Exception:
             requirements = ""
-    teacher_constraints, unparsed_specs = _parse_teacher_constraints(
+    teacher_constraints, unparsed_specs, unsupported_specs = _parse_teacher_constraints(
         requirements, teachers, classes)
 
     standards = _load_period_standards(period_ws)
@@ -505,6 +542,26 @@ def load_problem(in_dir):
         _find_sheet(wb, ["任课安排", "任课", "teaching_assignments"]))
     if not standards:
         raise DataError("「课时标准」sheet 为空，无法排课")
+
+    # N1（2026-10-01 实测）：「选考周课时」列只对出现在班级选科组合里的学科生效；
+    # 语数英等必考学科不在任何选科组合里 → 恒用「非选考周课时」。选考≠非选考时静默不生效，
+    # 教务改了数字以为改成功了。这里显式提醒。
+    _subj_map = {"物": "物理", "化": "化学", "生": "生物", "政": "政治", "史": "历史", "地": "地理"}
+    used_elective_subjects = set()
+    for ci in classes:
+        for ch in (ci.elective or ""):
+            if ch in _subj_map:
+                used_elective_subjects.add(_subj_map[ch])
+    n1_warned = False
+    for std in standards:
+        if (not n1_warned and std.subject not in used_elective_subjects
+                and std.elective_periods != std.non_elective_periods
+                and std.elective_periods > 0):
+            warnings_list.append(
+                f"学科「{std.subject}」不在任何班级的选科组合中，「选考周课时」({std.elective_periods}) 不会生效，"
+                f"实际按「非选考周课时」({std.non_elective_periods}) 排课；如需调整请改「非选考周课时」列。")
+            n1_warned = True  # 同类提醒只发一次，避免刷屏
+
     # 单次生成：教师指定一次传入，避免重复调用导致负载账本重置与告警重复
     courses, hint_assign = _generate_courses_new(
         classes, teachers, standards, assignments, warnings_list,
@@ -541,6 +598,12 @@ def load_problem(in_dir):
         show = "、".join(unparsed_specs[:3]) + ("…" if len(unparsed_specs) > 3 else "")
         warnings_list.append(
             f"额外约束中有 {len(unparsed_specs)} 行像是教师指定但无法解析，已忽略：{show}")
+
+    if unsupported_specs:
+        show = "；".join(unsupported_specs[:3]) + ("…" if len(unsupported_specs) > 3 else "")
+        warnings_list.append(
+            f"额外约束中有 {len(unsupported_specs)} 行要求当前不支持、未生效：{show}。"
+            f"目前仅支持「教师ID教班级ID学科」格式的教师指定（如 T001教C01语文）。")
 
     p = Problem(classes=classes, teachers=teachers, courses=courses,
                 requirements=requirements, config=cfg, warnings=warnings_list,

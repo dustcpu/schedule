@@ -187,7 +187,7 @@ def main() -> int:
     elog("阶段4/5: 求解排课方案...")
     t0 = time.time()
     try:
-        plans, solve_warnings, status = solve_plans(bundle)
+        plans, solve_warnings, status = solve_plans(bundle, log=elog)
         warnings.extend(solve_warnings)
         elog(f"  求解完成, 耗时{time.time()-t0:.1f}s, 状态={status}, 方案数={len(plans)}")
         for i, p in enumerate(plans):

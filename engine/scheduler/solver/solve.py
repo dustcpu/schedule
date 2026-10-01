@@ -168,8 +168,12 @@ def _describe(metrics: Dict[str, float], sub: Dict[str, float]) -> str:
     return "，".join(parts)
 
 
-def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
-    """返回 (方案列表, 求解过程 warnings, 最终状态字符串)。"""
+def solve_plans(bundle: ModelBundle, log=None) -> Tuple[List[Plan], List[str], str]:
+    """返回 (方案列表, 求解过程 warnings, 最终状态字符串)。
+
+    log: 可选回调（engine.py 传 elog），用于逐方案进度输出（问题3 引擎侧，2026-10-01）——
+    否则阶段 4 是全程最长的黑盒，外壳与用户无法区分「在算」和「卡死」。
+    """
     cfg = bundle.cfg
     warnings: List[str] = list(bundle.warnings)
     raw: List[Tuple[Dict[Any, int], Dict[Any, int], str]] = []   # (解x, 解y, 方案名)
@@ -205,7 +209,13 @@ def solve_plans(bundle: ModelBundle) -> Tuple[List[Plan], List[str], str]:
         # 固定但各档不同的种子：进一步打散搜索路径，同时保证结果可复现
         solver.parameters.random_seed = 1000 + 37 * i
 
+        if log:
+            log(f"  方案 {i + 1}/{len(profiles)}「{pname}」求解中（本套预算 {budget:.0f} 秒）...")
         status = solver.Solve(bundle.model)
+        solved_ok = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+        if log:
+            log(f"  方案 {i + 1}/{len(profiles)}「{pname}」"
+                f"{'完成' if solved_ok else '未求出，跳过'}（用时 {solver.WallTime():.1f} 秒）")
         if status == cp_model.OPTIMAL:
             last_status = "OPTIMAL"
         elif status == cp_model.FEASIBLE:

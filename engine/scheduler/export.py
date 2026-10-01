@@ -52,18 +52,40 @@ def register_font() -> str:
 
 
 # ---------------------------------------------------------------- 课表网格
-def _grid_rows(plan: Plan, ci, cfg) -> List[List[str]]:
+def _cell_label(plan: Plan, class_id: str, subj: str, problem: Problem) -> str:
+    """课表格子显示「学科\\n教师姓名」（问题4，2026-10-01）。
+
+    免教师学科（体育/艺术/信息等）与空格只显示学科；
+    教师缺失时只显示学科，不出空行。
+    """
+    if not subj or problem is None:
+        return subj
+    if subj in NO_TEACHER_SUBJECTS:
+        return subj
+    tid = plan.assign.get((class_id, subj))
+    if not tid:
+        return subj
+    t = problem.teachers.get(tid)
+    if not t or not t.name:
+        return subj
+    return f"{subj}\n{t.name}"
+
+
+def _grid_rows(plan: Plan, ci, cfg, problem: Problem = None) -> List[List[str]]:
     """生成某班课表的二维表（含表头）。
 
     体育活动不参与排课决策，作为附加行显示在正课之后。
     是否附加由 cfg.schedule.sports_activity 控制，节次与时钟由作息推算。
+    注意：格子值为「学科\\n教师」两行 —— verify_hard.load_result_grids 已同步改为
+    取第一行作学科，二者必须一起改（2026-10-01 问题4）。
     """
     labels = cfg.period_labels()
     rows: List[List[str]] = [["时间"] + DAYS]
     for per in cfg.periods():
         row = [labels[per - 1]]
         for d in range(1, NUM_DAYS + 1):
-            row.append(plan.grid.get((ci.id, d, per), ""))
+            subj = plan.grid.get((ci.id, d, per), "")
+            row.append(_cell_label(plan, ci.id, subj, problem))
         rows.append(row)
     # 附加体育活动行（固定，不参与排课；标签由作息推算）
     if getattr(cfg.schedule, "sports_activity", True):
@@ -111,11 +133,18 @@ def write_xlsx(path: str, plans: List[Plan], problem: Problem) -> None:
             title = w.cell(row=r, column=1, value=title_text)
             title.font = Font(bold=True, size=12)
             r += 1
-            rows = _grid_rows(p, ci, cfg)
+            rows = _grid_rows(p, ci, cfg, problem)
             for ri, row in enumerate(rows):
+                # 问题4：格子含「学科\n教师」两行，需要 wrap_text + 更高行高；
+                # 体育活动行（最后一行，若存在）仍是单行，不额外加高。
+                is_sports_row = (ri == len(rows) - 1
+                                 and getattr(cfg.schedule, "sports_activity", True))
+                if ri > 0 and not is_sports_row:
+                    w.row_dimensions[r + ri].height = 26
                 for cj, val in enumerate(row, start=1):
                     c = w.cell(row=r + ri, column=cj, value=val)
-                    c.alignment = Alignment(horizontal="center", vertical="center")
+                    c.alignment = Alignment(horizontal="center", vertical="center",
+                                            wrap_text=(ri > 0 and not is_sports_row))
                     c.border = border
                     if ri == 0:
                         c.font = Font(bold=True)
@@ -125,8 +154,9 @@ def write_xlsx(path: str, plans: List[Plan], problem: Problem) -> None:
         for col in "BCDEF":
             w.column_dimensions[col].width = 14
 
-    # 每个方案一张任课表：课表网格保持纯学科（校验器依赖它），
-    # 任课信息单独出 sheet，避免打断 result.xlsx 的解析。
+    # 每个方案一张任课表：课表网格自 2026-10-01 起为「学科\n教师」两行，
+    # verify_hard.load_result_grids 已同步改为取第一行作学科，二者必须一起改；
+    # 任课信息另出 sheet，便于按班级查看。
     for p in plans:
         _write_assign_sheet(wb, f"任课表{p.index}", p, problem, border)
 
@@ -239,8 +269,18 @@ def write_pdf(path: str, task_id: str, plans: List[Plan], problem: Problem,
                 suffix = c.elective
                 class_title = f"{c.name or c.id}　（{suffix}）" if suffix else (c.name or c.id)
                 story.append(Paragraph(class_title, h2))
-                rows = _grid_rows(p, c, cfg)
-                tbl = Table(rows, colWidths=[34 * mm] + [29 * mm] * NUM_DAYS)
+                rows = _grid_rows(p, c, cfg, problem)
+                # 问题4：格子含「学科\n教师」两行。reportlab Table 的纯字符串不解析换行，
+                # 含 \n 的格子转成 Paragraph 才能显示两行（行高自动撑开）。
+                cell_style = ParagraphStyle(
+                    "cell", fontName=font, fontSize=8, leading=10,
+                    alignment=1)  # TA_CENTER
+                rendered = [
+                    [Paragraph(str(v).replace("\n", "<br/>"), cell_style)
+                     if isinstance(v, str) and "\n" in v else v
+                     for v in row]
+                    for row in rows]
+                tbl = Table(rendered, colWidths=[34 * mm] + [29 * mm] * NUM_DAYS)
                 tbl.setStyle(TableStyle([
                     ("FONTNAME", (0, 0), (-1, -1), font),
                     ("FONTSIZE", (0, 0), (-1, -1), 8),
