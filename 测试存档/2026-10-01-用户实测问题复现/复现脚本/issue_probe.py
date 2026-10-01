@@ -23,7 +23,8 @@ sys.path.insert(0, ENGINE)
 # ============================================================ 问题2：解析器实测
 print("=" * 74)
 print("【问题2】特殊要求解析器实测")
-from scheduler.data.load import _parse_teacher_constraints, TeacherInfo, ClassInfo, NO_TEACHER_SUBJECTS
+from scheduler.data.load import (_parse_teacher_constraints, normalize_subject,
+                                 TeacherInfo, ClassInfo, NO_TEACHER_SUBJECTS)
 
 TEACHERS = {
     "T30": TeacherInfo(id="T30", name="张三", subject="数学"),
@@ -34,20 +35,28 @@ CLASSES = [ClassInfo(id="C01", name="一班"), ClassInfo(id="C05", name="五班"
 LINES = [
     "1.非物理选科班每周安排一节物理，非政治选科班每周安排一节政治",
     "2.教师T30所教授的班级其中一个必须是C05",
-    "3.T30教C05数学",                      # 受支持的写法，作为对照
+    "3.T30教C05数学",                      # 受支持的写法 + 行首编号，作为对照
 ]
 for ln in LINES:
-    res, unparsed = _parse_teacher_constraints(ln, TEACHERS, CLASSES)
-    tag = "解析成功" if res else ("进了未解析告警" if unparsed else "★完全静默丢弃")
+    # ⚠️ 返回值自 2026-10-01（5b03d06）起是 3 元组：(result, unparsed, unsupported)
+    res, unparsed, unsupported = _parse_teacher_constraints(ln, TEACHERS, CLASSES)
+    if res:
+        tag = "✔ 解析成功"
+    elif unparsed:
+        tag = "△ 语法告警（已提示用户）"
+    else:
+        tag = "△ 不支持告警（已提示用户）"
     print(f"  「{ln}」")
-    print(f"      → {tag}   解析结果={res}  未解析列表={unparsed if unparsed else '空'}")
+    print(f"      → {tag}  解析结果={res}")
+    print(f"         未解析={unparsed if unparsed else '空'}"
+          f"  不支持={unsupported if unsupported else '空'}")
 
 print()
-print("  NO_TEACHER_SUBJECTS（不需要教师的学科白名单）:")
+print("  NO_TEACHER_SUBJECTS（不需要教师的学科白名单，2026-10-01 已补 书法/劳动/生涯规划）:")
 print("    " + "、".join(sorted(NO_TEACHER_SUBJECTS)))
-print("  「信息课」在名单里吗：", "信息课" in NO_TEACHER_SUBJECTS)
-print("  「信息」在名单里吗：  ", "信息" in NO_TEACHER_SUBJECTS)
-print("  「信息技术」在名单里吗：", "信息技术" in NO_TEACHER_SUBJECTS)
+print("  学科名归一化实测（normalize_subject）：")
+for raw in ["信息课", "信息", "计算机", "信息技术", "心理健康", "体育与健康", "语文"]:
+    print(f"    {raw:6s} → {normalize_subject(raw)}")
 
 # ============================================================ 问题1：加一门「信息课」
 print()

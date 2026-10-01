@@ -145,6 +145,28 @@ textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--primary); }
 .status.warn { color: var(--warn); border-color: #fde68a; background: #fffbeb; }
 .status.error { color: var(--error); border-color: #fecaca; background: #fef2f2; }
 
+/* ---- 排课进度条（问题3，2026-10-01）---- */
+.progress { margin-top: 10px; }
+.progress.hidden { display: none; }
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 0.4s ease;
+}
+.progress-text {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .result.hidden { display: none; }
 .result ul {
   list-style: none;

@@ -1,5 +1,17 @@
 # -*- coding: utf-8 -*-
-"""进一步验证：行首的编号（1. / 1、/ ① / —— 等）会不会破坏教师指定解析。"""
+"""行首编号对「特殊要求」解析的影响 —— 回归用例。
+
+历史：
+  2026-10-01 问题 2a：解析器不剥行首列表标记，`1.T30教C05数学` 里第一个「教」之前
+  成了 `1.T30`，匹配不到教师 → 整行丢弃（连受支持的写法都失效）。
+  同日 `5b03d06` 修复。
+
+  ⚠️ 同一次修复还改了返回值签名：`_parse_teacher_constraints` 自 2026-10-01 起
+     返回 **3 元组** `(result, unparsed, unsupported)`。
+
+运行：python prefix_probe.py
+预期：A 组编号写法全部「生效」；B 组普通文字「静默」不打扰；C 组明确告警。
+"""
 import io
 import os
 import sys
@@ -17,29 +29,46 @@ TEACHERS = {
 }
 CLASSES = [ClassInfo(id="C01", name="一班"), ClassInfo(id="C05", name="五班")]
 
-CASES = [
-    "T30教C05数学",
-    "1.T30教C05数学",
-    "1、T30教C05数学",
-    "1）T30教C05数学",
-    "(1)T30教C05数学",
-    "①T30教C05数学",
-    "- T30教C05数学",
-    "T30=C05数学",
-    "1.T30=C05数学",
-    "T30教C05",
-    "张三教五班数学",
-    "1.张三教五班数学",
+
+def probe(line):
+    res, unparsed, unsupported = _parse_teacher_constraints(line, TEACHERS, CLASSES)
+    if res:
+        return "✔ 生效", str(res)
+    if unparsed:
+        return "△ 语法告警", unparsed[0][:36]
+    if unsupported:
+        return "△ 不支持告警", unsupported[0][:36]
+    return "· 静默（当普通说明）", ""
+
+
+GROUPS = [
+    ("A. 各种行首编号（都应当生效）", [
+        "T30教C05数学",
+        "1.T30教C05数学",
+        "1、T30教C05数学",
+        "1）T30教C05数学",
+        "(1)T30教C05数学",
+        "①T30教C05数学",
+        "- T30教C05数学",
+        "1.T30=C05数学",
+        "1.张三教五班数学",
+    ]),
+    ("B. 以数字开头的普通文字（应当静默，不打扰用户）", [
+        "2026年秋季作息时间",
+        "3月1日开始执行",
+        "12班语文每周加一节",
+        "2024级选科说明",
+        "年级：高二",
+    ]),
+    ("C. 会被明确告警的两类", [
+        "2.教师T30所教授的班级其中一个必须是C05",
+        "1.非物理选科班每周安排一节物理，非政治选科班每周安排一节政治",
+    ]),
 ]
 
-print(f"{'输入行':34s} {'解析结果':22s} 判定")
-print("-" * 88)
-for line in CASES:
-    res, unparsed = _parse_teacher_constraints(line, TEACHERS, CLASSES)
-    if res:
-        verdict = "✔ 解析成功"
-    elif unparsed:
-        verdict = "△ 只进了「无法解析」告警 → 实际被忽略"
-    else:
-        verdict = "★ 完全静默丢弃"
-    print(f"{line:34s} {str(res):22s} {verdict}")
+for title, cases in GROUPS:
+    print("=" * 84)
+    print(title)
+    for line in cases:
+        verdict, detail = probe(line)
+        print(f"  {line:34s} {verdict:16s} {detail}")

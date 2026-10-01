@@ -60,6 +60,12 @@
 
     <div id="status" class="status ready">就绪</div>
 
+    <!-- 排课进度条（问题3，2026-10-01）：由外壳的 scheduler-progress 事件驱动 -->
+    <div id="progress" class="progress hidden">
+      <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+      <div id="progress-text" class="progress-text"></div>
+    </div>
+
     <section id="result-area" class="result hidden">
       <div class="step">结果文件</div>
       <div id="result-cards" class="result-cards"></div>
@@ -83,8 +89,38 @@
   <script>
     const { invoke } = window.__TAURI__.core;
     const { getCurrentWindow } = window.__TAURI__.window;
+    const { listen } = window.__TAURI__.event;
 
     const $ = id => document.getElementById(id);
+
+    // ---- 排课进度条（问题3，2026-10-01）----
+    // 外壳现在边跑边读引擎输出，把「阶段N/5」「方案 i/N」推成 scheduler-progress 事件，
+    // 这里只负责画。拿不到事件通道也不影响排课，静默降级回原来的静态文字。
+    function showProgress() {
+      $('progress').classList.remove('hidden');
+      $('progress-fill').style.width = '0%';
+      $('progress-text').textContent = '正在启动排课引擎…';
+    }
+
+    function hideProgress() {
+      $('progress').classList.add('hidden');
+    }
+
+    function applyProgress(p) {
+      if (!p) return;
+      const pct = Math.max(0, Math.min(100, Number(p.percent) || 0));
+      $('progress-fill').style.width = pct + '%';
+      const secs = Number(p.elapsed_sec) > 0 ? Math.round(p.elapsed_sec) + ' 秒 · ' : '';
+      $('progress-text').textContent = secs + (p.message || '') + '（' + pct + '%）';
+    }
+
+    (async () => {
+      try {
+        await listen('scheduler-progress', e => applyProgress(e.payload));
+      } catch (err) {
+        // 旧版外壳没有这个事件通道时忽略即可
+      }
+    })();
 
     let inputPath = null;
     let outputDir = null;
@@ -337,6 +373,7 @@
       $('btn-run-text').textContent = '排课中...';
       $('btn-spinner').classList.remove('hidden');
       setStatus('running', '正在排课，请稍候…（25 个班约需 3 分钟，期间请勿关闭窗口）');
+      showProgress();
       $('result-area').classList.add('hidden');
 
       try {
@@ -358,6 +395,7 @@
       } finally {
         btn.disabled = false;
         $('btn-spinner').classList.add('hidden');
+        hideProgress();
         // 失败时按钮显示「重试」，成功显示「开始排课」
         const failed = $('status').classList.contains('error');
         $('btn-run-text').textContent = failed ? '🔄 重试' : '开始排课';

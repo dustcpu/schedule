@@ -263,7 +263,18 @@ def _parse_teacher_constraints(text, teachers, classes):
     class_ids = {c.id for c in classes}
     # 2a: 用户习惯像记笔记一样写「1.」「1、」「（1）」「①」「- 」等列表标记，
     # 不剥掉的话「1.T30教C05数学」里第一个「教」之前是「1.T30」，匹配不到教师 → 整行丢弃。
-    list_mark_re = re.compile(r'^\s*(?:[（(]?\d{1,3}[）).、:：]?|[-*•]|[①-⑳])\s*')
+    #
+    # ⚠️ 数字后面**必须跟标点**才算编号。早先的写法把标点设成可选，
+    #    于是「2026年秋季作息时间」「3月1日开始执行」这种以数字开头的普通文字
+    #    也被当成编号剥掉，还被下面的 2c 误报成"一条没生效的约束"（2026-10-01 实测）。
+    list_mark_re = re.compile(
+        r'^\s*(?:'
+        r'\d{1,3}\s*[.、)）:：]'          # 1. / 1、/ 1) / 1：
+        r'|[（(]\s*\d{1,3}\s*[)）]'       # （1） / (1)
+        r'|[-*•]'                          # - / * / •
+        r'|[①-⑳]'                         # ① ② …
+        r')\s*'
+    )
     for line in text.splitlines():
         raw = line
         line = line.strip().lstrip('\ufeff')

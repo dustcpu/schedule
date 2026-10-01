@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 /// 引擎运行超时（10 分钟后强杀进程）
@@ -550,6 +551,125 @@ fn download_template(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 // ⚠️ 必须带 (async)。
+/// 排课进度事件（问题3 外壳侧，2026-10-01）。
+///
+/// 之前外壳是等引擎退出后才去读 stdout，排课的 3 分钟里前端完全不知道跑到哪一步；
+/// 现在边跑边读，把「阶段N/5」「方案 i/N」解析成下面这个结构推进前端画进度条。
+#[derive(Clone, Serialize)]
+struct ProgressPayload {
+    stage: i32,
+    percent: i32,
+    message: String,
+    elapsed_sec: f64,
+}
+
+/// 取字符串开头的连续数字（引擎日志里的「阶段3/5」「方案 2/3」都靠它）。
+fn leading_int(s: &str) -> Option<i64> {
+    let digits: String = s.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+/// 从 `[15:16:38 +  61.0s] ...` 里取出 61.0。
+fn trailing_elapsed(line: &str) -> f64 {
+    let Some(plus) = line.find('+') else { return 0.0 };
+    let rest = &line[plus + 1..];
+    let Some(s) = rest.find('s') else { return 0.0 };
+    rest[..s].trim().parse().unwrap_or(0.0)
+}
+
+/// 去掉 `[HH:MM:SS + 12.3s] ` 前缀，给前端一句干净的话。
+fn strip_log_prefix(line: &str) -> String {
+    if line.starts_with('[') {
+        if let Some(end) = line.find(']') {
+            return line[end + 1..].trim().to_string();
+        }
+    }
+    line.trim().to_string()
+}
+
+/// 把引擎的一行日志解析成进度；不是进度行就返回 None。
+///
+/// 认这些形态（都来自 engine/engine.py 与 solver/solve.py 的 elog）：
+///   `阶段1/5: 加载输入文件...`                    → 10%
+///   `  方案 1/3「均衡方案」求解中（本套预算 60 秒）...` → 30% 起，按套数递增到 85%
+///   `  方案 1/3「均衡方案」完成（用时 60.1 秒）`       → 同上，按"已完成"算
+///   `=== 排课完成 ===`                              → 100%
+fn parse_engine_progress(raw: &str) -> Option<ProgressPayload> {
+    let elapsed = trailing_elapsed(raw);
+    let msg = strip_log_prefix(raw);
+
+    // 后 3 个阶段都很短，把 30%~85% 留给最长的那一段：阶段 4 逐套方案求解
+    if let Some(pos) = msg.find("阶段") {
+        if let Some(n) = leading_int(&msg[pos + "阶段".len()..]) {
+            let (percent, text) = match n {
+                1 => (10, "正在读取输入文件…"),
+                2 => (18, "正在校验数据…"),
+                3 => (26, "正在构建排课模型…"),
+                4 => (30, "正在求解排课方案…"),
+                5 => (90, "正在导出结果文件…"),
+                _ => return None,
+            };
+            return Some(ProgressPayload {
+                stage: n as i32,
+                percent,
+                message: text.to_string(),
+                elapsed_sec: elapsed,
+            });
+        }
+    }
+
+    if msg.contains("排课完成") {
+        return Some(ProgressPayload {
+            stage: 5,
+            percent: 100,
+            message: "排课完成".to_string(),
+            elapsed_sec: elapsed,
+        });
+    }
+
+    // `  方案 2/3「主科优先方案」求解中（本套预算 60 秒）...`
+    if let Some(pos) = msg.find("方案 ") {
+        let rest = &msg[pos + "方案 ".len()..];
+        let idx = leading_int(rest)?;
+        let after = &rest[rest.find('/')? + 1..];
+        let total = leading_int(after)?;
+        if idx <= 0 || total <= 0 || idx > total {
+            return None;
+        }
+        let finished = rest.contains("完成");
+        // 30 + [0,55]，按"已完成套数"给进度
+        let done = if finished { idx } else { idx - 1 };
+        let percent = 30 + (done * 55 / total) as i32;
+        let name = msg
+            .find('「')
+            .and_then(|a| msg.find('」').map(|b| (a, b)))
+            .map(|(a, b)| msg[a + '「'.len_utf8()..b].to_string())
+            .unwrap_or_default();
+        let label = if name.is_empty() {
+            format!("第 {}/{} 套方案", idx, total)
+        } else {
+            format!("第 {}/{} 套方案「{}」", idx, total, name)
+        };
+        let message = if finished {
+            format!("{} 完成", label)
+        } else {
+            format!("{} 求解中…", label)
+        };
+        return Some(ProgressPayload {
+            stage: 4,
+            percent: percent.min(85),
+            message,
+            elapsed_sec: elapsed,
+        });
+    }
+
+    None
+}
+
 // Tauri 官方文档：「不含 async 关键字的命令跑在主线程上，除非标了 #[tauri::command(async)]」。
 // 本函数要阻塞数分钟轮询引擎退出（循环里只有 sleep，没有任何消息泵），
 // 跑在主线程上会把 WebView 的消息循环占死 → Windows 判定窗口"未响应"。
@@ -656,6 +776,43 @@ fn run_scheduler(
     let pid = child.id();
     app_log(&format!("引擎已启动, PID={}", pid));
 
+    // 问题3（2026-10-01）：以前是等子进程退出后才 read_to_end，排课的几分钟里
+    // 前端完全不知道跑到哪一步。改成起线程边跑边读：
+    //   ① 逐行解析「阶段N/5」「方案 i/N」，用 scheduler-progress 事件推给前端；
+    //   ② 顺带消掉一个隐患 —— 输出量超过管道缓冲区（Windows 约 4–64KB）时，
+    //      子进程会阻塞在写操作上，而外壳正在 try_wait 里干等，双方一起卡住。
+    let stdout_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stderr_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+
+    let stdout_handle = child.stdout.take().map(|pipe| {
+        let buf = Arc::clone(&stdout_buf);
+        let app = app.clone();
+        std::thread::spawn(move || {
+            for chunk in BufReader::new(pipe).split(b'\n') {
+                let Ok(bytes) = chunk else { break };
+                let mut line = bytes;
+                line.push(b'\n');
+                if let Some(p) = parse_engine_progress(&String::from_utf8_lossy(&line)) {
+                    let _ = app.emit("scheduler-progress", p);
+                }
+                if let Ok(mut b) = buf.lock() {
+                    b.extend_from_slice(&line);
+                }
+            }
+        })
+    });
+
+    let stderr_handle = child.stderr.take().map(|mut pipe| {
+        let buf = Arc::clone(&stderr_buf);
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = pipe.read_to_end(&mut v);
+            if let Ok(mut b) = buf.lock() {
+                b.extend_from_slice(&v);
+            }
+        })
+    });
+
     // 轮询等待引擎退出；超过 10 分钟强杀进程
     let deadline = Instant::now() + ENGINE_TIMEOUT;
     let mut timed_out = false;
@@ -685,13 +842,15 @@ fn run_scheduler(
     let elapsed = start_time.elapsed().as_secs_f64();
     app_log(&format!("引擎退出, 耗时{:.1}秒, 超时={}", elapsed, timed_out));
 
-    // 读取 stdout/stderr
-    let stdout = child.stdout.take()
-        .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
-        .unwrap_or_default();
-    let stderr = child.stderr.take()
-        .map(|mut s| { let mut v = Vec::new(); let _ = std::io::Read::read_to_end(&mut s, &mut v); v })
-        .unwrap_or_default();
+    // 收尾：引擎已退出，两个读取线程马上就会读到 EOF，join 一下拿到完整输出
+    if let Some(h) = stdout_handle {
+        let _ = h.join();
+    }
+    if let Some(h) = stderr_handle {
+        let _ = h.join();
+    }
+    let stdout = stdout_buf.lock().map(|b| b.clone()).unwrap_or_default();
+    let stderr = stderr_buf.lock().map(|b| b.clone()).unwrap_or_default();
 
     if !stdout.is_empty() {
         app_log(&format!("=== 引擎stdout ===\n{}", String::from_utf8_lossy(&stdout)));
@@ -927,4 +1086,86 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("排课助手启动失败");
+}
+
+// ==================== 单元测试 ====================
+// 只测纯函数（进度解析），不依赖 Tauri 运行时：
+//     cargo test --bin paike-assistant
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 进度解析必须认准引擎真实输出的这几种行（格式见 engine/scheduler/solver/solve.py）。
+    #[test]
+    fn progress_parses_engine_log_lines() {
+        // 阶段行
+        let p = parse_engine_progress("[15:16:38 +   0.0s] 阶段1/5: 加载输入文件...").unwrap();
+        assert_eq!((p.stage, p.percent), (1, 10));
+        let p = parse_engine_progress("[15:16:38 +   0.8s] 阶段4/5: 求解排课方案...").unwrap();
+        assert_eq!((p.stage, p.percent), (4, 30));
+        let p = parse_engine_progress("[15:16:38 + 181.4s] 阶段5/5: 导出结果文件...").unwrap();
+        assert_eq!((p.stage, p.percent), (5, 90));
+
+        // 逐方案行：求解中 / 完成
+        let p = parse_engine_progress(
+            "[15:16:38 +   0.8s]   方案 1/3「均衡方案」求解中（本套预算 60 秒）...").unwrap();
+        assert_eq!((p.stage, p.percent), (4, 30));
+        assert!(p.message.contains("1/3") && p.message.contains("均衡方案"));
+
+        let p = parse_engine_progress(
+            "[15:17:39 +  61.0s]   方案 1/3「均衡方案」完成（用时 60.1 秒）").unwrap();
+        assert_eq!(p.percent, 30 + 55 / 3);
+        assert!(p.message.contains("完成"));
+        assert_eq!(p.elapsed_sec, 61.0);
+
+        let p = parse_engine_progress(
+            "[15:19:39 + 181.4s]   方案 3/3「自习后置方案」完成（用时 60.2 秒）").unwrap();
+        assert_eq!(p.percent, 85);
+
+        // 结束行
+        let p = parse_engine_progress("[15:19:40 + 182.6s] === 排课完成 ===").unwrap();
+        assert_eq!(p.percent, 100);
+    }
+
+    /// 普通日志行不能被误判成进度（否则进度条会乱跳）。
+    #[test]
+    fn progress_ignores_other_lines() {
+        for line in [
+            "[15:16:38 +   0.0s] === 引擎启动 ===",
+            "[15:16:38 +   0.0s]   教师数: 92, 班级数: 25, 课程数: 300",
+            "[15:16:38 +   0.0s]   加载完成, 耗时0.0s",
+            "[15:17:39 +  61.0s]   ...",
+            "",
+        ] {
+            assert!(parse_engine_progress(line).is_none(), "不应识别为进度: {line}");
+        }
+    }
+
+    /// 进度必须单调不减，否则进度条会往回退。
+    #[test]
+    fn progress_is_monotonic() {
+        let lines = [
+            "[t + 0.0s] 阶段1/5: 加载输入文件...",
+            "[t + 0.1s] 阶段2/5: 数据校验...",
+            "[t + 0.2s] 阶段3/5: 构建CP-SAT模型...",
+            "[t + 0.3s] 阶段4/5: 求解排课方案...",
+            "[t + 0.4s]   方案 1/3「均衡方案」求解中（本套预算 60 秒）...",
+            "[t + 60.4s]   方案 1/3「均衡方案」完成（用时 60.1 秒）",
+            "[t + 60.5s]   方案 2/3「主科优先方案」求解中（本套预算 60 秒）...",
+            "[t + 121.5s]   方案 2/3「主科优先方案」完成（用时 60.1 秒）",
+            "[t + 121.6s]   方案 3/3「自习后置方案」求解中（本套预算 60 秒）...",
+            "[t + 181.6s]   方案 3/3「自习后置方案」完成（用时 60.2 秒）",
+            "[t + 182.0s] 阶段5/5: 导出结果文件...",
+            "[t + 182.6s] === 排课完成 ===",
+        ];
+        let mut last = -1;
+        for line in lines {
+            if let Some(p) = parse_engine_progress(line) {
+                assert!((0..=100).contains(&p.percent), "百分比越界: {}", p.percent);
+                assert!(p.percent >= last, "进度回退了: {last} -> {} ({line})", p.percent);
+                last = p.percent;
+            }
+        }
+        assert_eq!(last, 100);
+    }
 }
