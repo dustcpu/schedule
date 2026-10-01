@@ -1,7 +1,12 @@
 # 论文 PDF 库
 
-> 下载日期：2026-09-21　共 **13 份**，全部为**合法开放获取**来源（arXiv / IJCAI / LIPIcs / PATAT / 机构仓储 / 作者主页）。
+> 下载日期：2026-09-21　入库 **12 份**，全部为**合法开放获取**来源（arXiv / IJCAI / LIPIcs / PATAT / 机构仓储 / 作者主页）。
 > 每份文件都已校验为有效 PDF，页数如下。**未使用任何盗版渠道**；付费墙文献见 `../待获取-付费墙清单.md`。
+>
+> ⚠️ **2026-10-01 起，整本会议论文集 `PATAT2024-Proceedings.pdf`（396 页 / 15.2 MB）不再入库**
+> —— 单个文件占了本目录近八成体积，而它更像一个"论文入口"而不是必读文献。
+> 文件仍在开发机本地保留；需要时从 PATAT 2024 官网（LIPIcs 卷）重新下载即可，
+> 或直接按下方表格里的单篇论文索引找。
 
 ---
 
@@ -23,7 +28,7 @@
 |---|---|---|---|
 | `Demirovic-Musliu-MaxSAT-LNS-HighSchool-Timetabling.pdf` | 22 | TU Wien | MaxSAT + 大邻域搜索解高中排课 |
 | `PATAT2012-Third-International-Timetabling-Competition.pdf` | 6 | PATAT 官网 | ITC2011 竞赛说明（高中排课赛道） |
-| `PATAT2024-Proceedings.pdf` | **396** | PATAT 2024 官网 | **整本会议论文集**，含大量最新排课论文，可按目录检索 |
+| `PATAT2024-Proceedings.pdf` | **396** | PATAT 2024 官网 | **整本会议论文集**，含大量最新排课论文，可按目录检索（⚠️ 2026-10-01 起**不入库**，本地保留） |
 | `IJCAI2015-Diverse-Solutions-CSP.pdf` | 7 | IJCAI | **多解多样性**的经典表述（对应 3–8 套方案） |
 | `IJCAI2022-Explaining-SoftGoal-Conflicts.pdf` | 7 | IJCAI | 通过**约束放宽**解释冲突（对应无解诊断） |
 | `arXiv2204.03429-Counterfactual-Explanations-Relaxations.pdf` | 6 | arXiv | **反事实解释**："如果放宽 X 会怎样" |
@@ -33,7 +38,8 @@
 
 ## 使用提示
 
-- **`PATAT2024-Proceedings.pdf` 是整本论文集（396 页）**，建议先看目录再定位；里面很可能有比上述更贴题的论文。
+- **`PATAT2024-Proceedings.pdf` 是整本论文集（396 页）**，**不再入库**、只在开发机本地保留；
+  需要时从 PATAT 2024 官网下载，或先在本地打开它按目录检索。
 - **Ceschia 2023 是 arXiv 预印本**，与 EJOR 期刊版可能有细微差异，正式引用请以期刊版为准（DOI: 10.1016/j.ejor.2022.07.011）。
 - **`Demirovic-2017` 只有 2 页**——如果你需要该工作的完整细节，看同目录的 `Demirovic-Musliu-MaxSAT-LNS-HighSchool-Timetabling.pdf`（22 页，同一研究线的完整论文）。
 - **最想要但没拿到的是 Demirović & Stuckey 2018（CPAIOR, hot starts）**——这篇与我们的技术路线最匹配，但 Springer 付费墙。获取方式见 `../待获取-付费墙清单.md`。

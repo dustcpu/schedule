@@ -29,8 +29,14 @@ output/
 !src-tauri/resources/*.pdf
 # 参考资料里的论文 PDF 需要入库（否则被上面的 *.pdf 挡掉）
 !参考资料/pdf/*.pdf
+# 例外：整本会议论文集 15 MB，不入库（本地保留，需要时从 PATAT 官网下载）
+参考资料/pdf/PATAT2024-Proceedings.pdf
 # 测试存档只保留课表 xlsx（不保留 pdf，故 pdf 仍被上面的 *.pdf 挡住）
 !测试存档/**/*.xlsx
+# 测试产物（课表与运行结果）自 2026-10-01 起不入库，只在本地保留；
+# 结论与证据摘要写在各自目录的 .md 里
+测试存档/**/result.xlsx
+测试存档/**/status.json
 
 # 系统 / 编辑器
 .DS_Store
