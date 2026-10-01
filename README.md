@@ -1,6 +1,6 @@
 # 排课助手
 
-> 版本：v0.1.6
+> 版本：v0.1.7
 > 作者：Dust.
 > 技术栈：Tauri 2（Rust + 原生 HTML/CSS/JS）+ Python 排课引擎（OR-Tools CP-SAT）
 
