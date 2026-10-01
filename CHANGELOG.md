@@ -46,6 +46,12 @@
   配套：`ARTS_SUBJECTS`（体育/艺术类不排首末的软约束）补入「信息」，
   `engine/input_template.md` 的免教师学科清单同步更新。
 
+### 文档
+- 新增 `docs/发版与Release规范.md`：把版本号 7 处、`vX.Y.Z` / `engine-vX.Y.Z` 两条线的
+  tag 与 Release 命名口径、附件清单、打 tag 的正确顺序固定下来。
+  起因是 Release 页面上出现了一个标题叫 `engine-v0.1.5`、却挂在 `v0.1.5`（外壳版本）
+  tag 上的条目，与另一个内核 Release 重复。
+
 ### 修复
 - **排课进度条一直不动**（2026-10-01 用户实测）。进度改为前端**轮询**外壳的 `get_progress`
   命令，不再依赖 Tauri 事件 —— 本项目的 webview 没有配置 `capabilities`
