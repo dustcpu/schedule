@@ -16,16 +16,20 @@
 
 | 位置 | 当前值 | 说明 |
 |---|---|---|
-| `src-tauri/tauri.conf.json` | `0.1.7` | 安装包版本（外壳） |
-| `src-tauri/Cargo.toml` | `0.1.7` | Rust 包版本 |
-| `src-tauri/Cargo.lock` | `0.1.7` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
-| `README.md` | `v0.1.7` | 文档头部 |
-| `ui/settings.html` | `v0.1.7` | 设置页「关于」里显示的版本号 |
-| `engine/scheduler/__init__.py` | `0.1.7` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
+| `src-tauri/tauri.conf.json` | `0.1.8` | 安装包版本（外壳） |
+| `src-tauri/Cargo.toml` | `0.1.8` | Rust 包版本 |
+| `src-tauri/Cargo.lock` | `0.1.8` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
+| `README.md` | `v0.1.8` | 文档头部 |
+| `ui/settings.html` | `v0.1.8` | 设置页「关于」里显示的版本号 |
+| `engine/scheduler/__init__.py` | `0.1.8` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
 
 ---
 
 ## [未发布]
+
+> 下一次改动写在这里；发版时整段转成新的版本小节（带日期）。
+
+## [v0.1.8] - 2026-10-04
 
 ### 文档
 - 新增 `docs/额外约束处理方案评估.md`：评估「特殊要求」这一环该怎么做——
