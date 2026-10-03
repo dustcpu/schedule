@@ -55,7 +55,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from openpyxl import load_workbook
 
 from ..config import (
-    Config, SELF_STUDY, _norm_header,
+    Config, SELF_STUDY, _norm_header, NUM_DAYS,
     load_from_hard_limits,
 )
 
@@ -117,6 +117,65 @@ class CourseReq:
 
 
 @dataclass
+class StructuredConstraint:
+    """结构化额外约束（约束转换器产出，schema v1，见 docs/约束能力清单.md）。
+
+    与「教师指定」（文本解析）互补：教师指定走 CourseReq.locked 语义，
+    其余四类在此承载，由 solver/model.py 落成 CP-SAT 约束。
+    days: 1-5（周一~周五）；periods: 1..periods_per_day。
+    """
+    type: str                       # teacher_unavailable / teacher_no_double_day /
+                                    # class_unavailable / teacher_max_classes
+    teacher: str = ""
+    class_id: str = ""
+    subject: str = ""
+    days: List[int] = field(default_factory=list)
+    periods: List[int] = field(default_factory=list)   # 空 = 全天
+    max_classes: int = 0
+    raw: Dict[str, Any] = field(default_factory=dict)  # 原始 JSON（回显/校验用）
+
+    def describe(self, problem: "Problem") -> str:
+        """「我理解成……」人话口径（与约束转换器回显一致）。"""
+        t = self.type
+        tid_show = problem.teacher_name(self.teacher) + f"（{self.teacher}）" \
+            if self.teacher else ""
+        days_txt = "、周".join("一二三四五"[d - 1] for d in self.days)
+        if t == "teacher_unavailable":
+            slot = ""
+            if self.periods:
+                if self.periods == list(range(1, problem.config.schedule.morning_periods + 1)):
+                    slot = "上午 "
+                elif self.periods[-1] == problem.config.schedule.periods_per_day \
+                        and self.periods[0] == problem.config.schedule.morning_periods + 1:
+                    slot = "下午 "
+                elif len(self.periods) == 1:
+                    slot = f"第{self.periods[0]}节 "
+                else:
+                    slot = f"第{self.periods[0]}-{self.periods[-1]}节 "
+            return f"{tid_show} 周{days_txt} {slot}不排课"
+        if t == "teacher_no_double_day":
+            return f"{tid_show} 周{days_txt} 不排连堂"
+        if t == "class_unavailable":
+            d = self.days[0] if self.days else 0
+            slot = ""
+            if self.periods:
+                if self.periods == list(range(1, problem.config.schedule.morning_periods + 1)):
+                    slot = "上午 "
+                elif self.periods[-1] == problem.config.schedule.periods_per_day \
+                        and self.periods[0] == problem.config.schedule.morning_periods + 1:
+                    slot = "下午 "
+                elif len(self.periods) == 1:
+                    slot = f"第{self.periods[0]}节 "
+                else:
+                    slot = f"第{self.periods[0]}-{self.periods[-1]}节 "
+            return f"班级 {self.class_id} 周{'一二三四五'[d - 1] if d else '?'} {slot}不排课" \
+                   f"（这些格将显示为自习）"
+        if t == "teacher_max_classes":
+            return f"{tid_show} 最多带 {self.max_classes} 个班"
+        return str(self.raw)
+
+
+@dataclass
 class Problem:
     classes: List[ClassInfo] = field(default_factory=list)
     teachers: Dict[str, TeacherInfo] = field(default_factory=dict)
@@ -127,6 +186,8 @@ class Problem:
     # (班级ID, 学科) -> 教师ID：贪心得到的预期分配。
     # 仅用于求解热启动 hint、过载校验与回退路径，不是最终排课结果。
     hint_assign: Dict[Tuple[str, str], str] = field(default_factory=dict)
+    # 结构化额外约束（structured_requirements.json / requirements.txt 围栏块）
+    structured: List[StructuredConstraint] = field(default_factory=list)
 
     def teacher_name(self, tid: Optional[str]) -> str:
         if not tid:
@@ -400,6 +461,270 @@ def _parse_teacher_constraints(text, teachers, classes):
     return result, unparsed, unsupported
 
 
+def _extract_fenced_json(text: str):
+    """提取文本里的 ```json ... ``` 围栏块（裸 ``` 也认）。
+
+    返回 (解析结果列表, 删掉围栏块后的文本)。围栏块是「约束转换器」的粘贴通道：
+    不删掉的话，JSON 的每一行都会落进"不支持"告警里变成噪音。
+    """
+    blocks: List[str] = []
+
+    def _grab(m):
+        blocks.append(m.group(1))
+        return ""
+
+    cleaned = re.sub(r"```(?:json)?\s*\n?(\{.*?\})\s*\n?```", _grab, text or "",
+                     flags=re.S)
+    parsed = []
+    for b in blocks:
+        try:
+            parsed.append(json.loads(b))
+        except Exception:
+            parsed.append(b)   # 解析失败的原文，交给上层告警
+    return parsed, cleaned
+
+
+_STRUCTURED_TYPES = ("assign_teacher", "teacher_unavailable", "teacher_no_double_day",
+                     "class_unavailable", "teacher_max_classes")
+
+
+def _validate_structured_item(item, teachers, class_ids, cfg):
+    """校验一条结构化约束，合法返回 (type, 规整字段)，不合法返回 (None, 原因)。
+
+    teachers: {教师ID: TeacherInfo}；class_ids: {班级ID}（集合）。
+    """
+    if not isinstance(item, dict):
+        return None, "不是对象（应为 {\"type\": ...}）"
+    t = item.get("type")
+    if t not in _STRUCTURED_TYPES:
+        return None, (f"未知类型「{t}」。只支持：{'、'.join(_STRUCTURED_TYPES)}"
+                      f"（宁可弃权，不要猜）")
+
+    def _tid_ok(token):
+        if token in teachers:
+            return token
+        return _resolve_id(str(token), list(teachers))
+
+    def _days(raw):
+        if raw is None:
+            return None, "缺少 days（1-5，周一到周五）"
+        if isinstance(raw, int):
+            raw = [raw]
+        if not isinstance(raw, list) or not raw:
+            return None, "days 应为非空列表（如 [2] 或 [1,3]）"
+        out = []
+        for d in raw:
+            if not isinstance(d, int) or isinstance(d, bool) or not (1 <= d <= NUM_DAYS):
+                return None, f"days 里的「{d}」不是 1-{NUM_DAYS} 的整数"
+            if d not in out:
+                out.append(d)
+        return out, ""
+
+    def _periods(raw):
+        if raw in (None, [], ""):
+            return [], ""       # 空 = 全天
+        if isinstance(raw, int):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return None, "periods 应为节次列表（如 [6,7,8]）"
+        per_day = cfg.schedule.periods_per_day
+        out = []
+        for p in raw:
+            if not isinstance(p, int) or isinstance(p, bool) or not (1 <= p <= per_day):
+                return None, f"periods 里的「{p}」超出 1-{per_day} 节"
+            if p not in out:
+                out.append(p)
+        return sorted(out), ""
+
+    if t == "assign_teacher":
+        tid = _tid_ok(item.get("teacher"))
+        if not tid:
+            return None, f"教师「{item.get('teacher')}」不在「教师」表里"
+        cid = item.get("class")
+        if cid not in class_ids:
+            cid2 = _resolve_id(str(cid), list(classes))
+            if not cid2:
+                return None, f"班级「{cid}」不在「班级」表里"
+            cid = cid2
+        subj = normalize_subject(str(item.get("subject") or "").strip())
+        if not subj:
+            return None, "缺少 subject"
+        return ("assign_teacher", {"teacher": tid, "class": cid, "subject": subj})
+
+    if t in ("teacher_unavailable", "teacher_no_double_day"):
+        tid = _tid_ok(item.get("teacher"))
+        if not tid:
+            return None, f"教师「{item.get('teacher')}」不在「教师」表里"
+        days, err = _days(item.get("days"))
+        if err:
+            return None, err
+        if t == "teacher_unavailable":
+            periods, err = _periods(item.get("periods"))
+            if err:
+                return None, err
+            return (t, {"teacher": tid, "days": days, "periods": periods})
+        return (t, {"teacher": tid, "days": days})
+
+    if t == "class_unavailable":
+        cid = item.get("class")
+        if cid not in class_ids:
+            cid2 = _resolve_id(str(cid), list(classes))
+            if not cid2:
+                return None, f"班级「{cid}」不在「班级」表里"
+            cid = cid2
+        day = item.get("day")
+        if isinstance(day, list):
+            return None, "day 应为单个整数（一天一条，多天请拆成多条）"
+        days, err = _days([day] if day is not None else None)
+        if err:
+            return None, "day " + err
+        periods, err = _periods(item.get("periods"))
+        if err:
+            return None, err
+        return (t, {"class": cid, "days": days, "periods": periods})
+
+    # teacher_max_classes
+    mx = item.get("max")
+    tid = _tid_ok(item.get("teacher"))
+    if not tid:
+        return None, f"教师「{item.get('teacher')}」不在「教师」表里"
+    if not isinstance(mx, int) or isinstance(mx, bool) or mx < 1:
+        return None, f"max「{mx}」应为 ≥1 的整数"
+    return (t, {"teacher": tid, "max_classes": mx})
+
+
+def load_structured_constraints(in_dir, requirements_text, teachers, classes, cfg,
+                                warnings):
+    """读取结构化约束（双通道）：
+      ① 输入目录可选文件 structured_requirements.json（约束转换器 --out 产出）；
+      ② requirements.txt 里的 ```json 围栏块（转换器产出，可粘贴进「特殊要求」框）。
+
+    返回 (constraints, assign_overrides, 清理后的 requirements 文本)。
+    每条独立校验，不合法只丢那条并给出原因（协议 §8：无法解析 → 忽略 + 告警）。
+    """
+    constraints: List[StructuredConstraint] = []
+    assign_overrides: Dict[Tuple[str, str], str] = {}
+    sources: List[Tuple[str, Any]] = []
+    class_ids = {c.id for c in classes}
+
+    fenced, cleaned = _extract_fenced_json(requirements_text)
+    for i, data in enumerate(fenced, 1):
+        sources.append((f"requirements.txt 围栏块{i}", data))
+    path = os.path.join(in_dir, "structured_requirements.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                sources.append(("structured_requirements.json", json.load(f)))
+        except Exception as e:
+            warnings.append(f"structured_requirements.json 解析失败，已忽略：{e}")
+
+    for label, data in sources:
+        if isinstance(data, str):
+            warnings.append(f"{label}不是合法 JSON，已忽略（AI 返回的内容要存成纯 JSON）")
+            continue
+        if not isinstance(data, dict):
+            warnings.append(f"{label}格式不对（应为 {{\"version\":…, \"constraints\":[…]}}），已忽略")
+            continue
+        version = data.get("version", 1)
+        if version != 1:
+            warnings.append(f"{label}的 version={version}，本引擎只认 v1，该块已忽略")
+            continue
+        items = data.get("constraints")
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            warnings.append(f"{label}的 constraints 不是列表，已忽略")
+            continue
+        for idx, item in enumerate(items, 1):
+            t, fields = _validate_structured_item(item, teachers, class_ids, cfg)
+            if t is None:
+                show = json.dumps(item, ensure_ascii=False)
+                show = show if len(show) <= 60 else show[:60] + "…"
+                warnings.append(f"结构化约束第{idx}条未生效：{fields}（{show}）")
+                continue
+            if t == "assign_teacher":
+                key = (fields["class"], fields["subject"])
+                if key in assign_overrides and assign_overrides[key] != fields["teacher"]:
+                    warnings.append(
+                        f"{label}第{idx}条与更早的指定冲突"
+                        f"（{key[0]}{key[1]}已指定给 {assign_overrides[key]}），"
+                        f"以本条为准")
+                assign_overrides[key] = fields["teacher"]
+                continue
+            constraints.append(StructuredConstraint(
+                type=t, teacher=fields.get("teacher", ""),
+                class_id=fields.get("class", ""),
+                days=fields.get("days", []),
+                periods=fields.get("periods", []),
+                max_classes=fields.get("max_classes", 0),
+                raw=dict(item),
+            ))
+
+    # 跨通道去重（同一约束写两遍只生效一次）
+    seen, uniq = set(), []
+    for c in constraints:
+        key = json.dumps({"type": c.type, "teacher": c.teacher,
+                          "class": c.class_id, "days": c.days,
+                          "periods": c.periods, "max": c.max_classes},
+                         sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(c)
+    return uniq, assign_overrides, cleaned
+
+
+def apply_structured_double_bans(courses, structured, teachers, cfg, warnings,
+                                 hint_assign):
+    """教师连堂禁日 → 候选收缩：连堂日按学科固定，禁该日的连堂 = 禁整科任课。
+
+    直接把该教师移出相关课程的候选集——H26 的下界（lo=1 对称性破除）、贪心
+    hint 与求解空间随之自然收缩；若改在模型层用 b+y≤1 表达，会与 H26 的
+    lo=1 相撞导致假性无解（2026-10-03 小模型实测）。
+    """
+    for sc in structured or []:
+        if sc.type != "teacher_no_double_day":
+            continue
+        t_name = teachers[sc.teacher].name if sc.teacher in teachers else sc.teacher
+        d_name = "、周".join("一二三四五"[d - 1] for d in sc.days)
+        removed: List[str] = []
+        emptied: Optional[CourseReq] = None
+        emptied_day = 0
+        for c in courses:
+            if (c.subject in NO_TEACHER_SUBJECTS or c.block_len <= 1
+                    or sc.teacher not in (c.teacher_candidates or [])):
+                continue
+            dday = cfg.consecutive.day_of(c.subject)
+            if dday is None or dday not in sc.days:
+                continue
+            c.teacher_candidates = [t for t in c.teacher_candidates if t != sc.teacher]
+            if not c.teacher_candidates:
+                emptied = c
+                emptied_day = dday
+                break
+            c.teacher_id = (c.teacher_candidates[0]
+                            if len(c.teacher_candidates) == 1 else None)
+            hint_assign[(c.class_id, c.subject)] = c.teacher_candidates[0]
+            removed.append(f"{c.class_id}「{c.subject}」")
+        if emptied is not None:
+            d = "一二三四五"[emptied_day - 1]
+            if emptied.locked:
+                raise DataError(
+                    f"结构化约束冲突：{t_name}（{sc.teacher}）不想周{d}上连堂，"
+                    f"但该学科连堂固定在周{d}，而 {emptied.class_id} 的"
+                    f"「{emptied.subject}」已显式指定给他任教，两条要求无法同时满足。"
+                    f"请取消其中一条")
+            raise DataError(
+                f"班级 {emptied.class_id} 的「{emptied.subject}」所有候选教师都要求"
+                f"周{d}不排连堂，而该学科连堂固定在周{d}，无人可任课。"
+                f"请调整结构化约束（约束转换器对这类冲突有预警），或为该学科增加教师")
+        if removed:
+            show = "、".join(removed[:4]) + ("…" if len(removed) > 4 else "")
+            warnings.append(
+                f"结构化约束生效：{t_name}（{sc.teacher}）周{d_name}不排连堂，"
+                f"已将其移出 {len(removed)} 门课程的候选：{show}")
+
+
 def _pick_candidates(subj, teachers_by_subject, teacher_load, k: int) -> List[str]:
     """按 (当前负载, 教师ID) 升序取前 k 位同学科教师。
 
@@ -618,8 +943,19 @@ def load_problem(in_dir):
                 requirements = f.read().strip()
         except Exception:
             requirements = ""
+    # 结构化约束（双通道）：① 输入目录可选文件 structured_requirements.json
+    # ② requirements.txt 里的 ```json 围栏块（约束转换器产出）。
+    # 必须在解析教师指定之前做——围栏块要从文本里剥掉，assign 类要并入指定任课。
+    structured_reqs, assign_struct, requirements = load_structured_constraints(
+        in_dir, requirements, teachers, classes, cfg, warnings_list)
     teacher_constraints, unparsed_specs, unsupported_specs = _parse_teacher_constraints(
         requirements, teachers, classes)
+    for key, tid in assign_struct.items():
+        if key in teacher_constraints and teacher_constraints[key] != tid:
+            warnings_list.append(
+                f"同一门课（{key[0]} {key[1]}）在文本与结构化约束里指定了不同教师"
+                f"（{teacher_constraints[key]} / {tid}），以结构化为准")
+        teacher_constraints[key] = tid
 
     standards = _load_period_standards(period_ws)
     assignments = _load_teaching_assignments(
@@ -678,6 +1014,11 @@ def load_problem(in_dir):
             show = "、".join(skipped[:5]) + ("…" if len(skipped) > 5 else "")
             warnings_list.append(f"以下教师指定在课程表中找不到对应条目，已忽略：{show}")
 
+    # 结构化约束·教师连堂禁日：见 apply_structured_double_bans（独立成函数，
+    # 供手工构造 Problem 的测试复用同一条收缩逻辑）。
+    apply_structured_double_bans(courses, structured_reqs, teachers, cfg,
+                                 warnings_list, hint_assign)
+
     if unparsed_specs:
         # 尽量说清"该怎么办"，而不是只丢一句"无法解析"：
         # 用户 2026-10-01 照着书写规范写，结果被忽略，且看不出哪里写错了。
@@ -704,9 +1045,22 @@ def load_problem(in_dir):
             f"额外约束中有 {len(unsupported_specs)} 行要求当前不支持、未生效：{show}。"
             f"目前仅支持「教师ID教班级ID学科」格式的教师指定（如 T001教C01语文）。")
 
+    if structured_reqs:
+        _kind_names = {"teacher_unavailable": "教师不可用",
+                       "teacher_no_double_day": "教师连堂禁日",
+                       "class_unavailable": "班级不可用",
+                       "teacher_max_classes": "教师带班数上限"}
+        kinds: Dict[str, int] = {}
+        for c in structured_reqs:
+            kinds[c.type] = kinds.get(c.type, 0) + 1
+        detail = "、".join(f"{_kind_names[k]} {n} 条" for k, n in sorted(kinds.items()))
+        warnings_list.append(
+            f"已接收 {len(structured_reqs)} 条结构化约束（{detail}），"
+            f"建模时生效并逐条回显；校验器会对其复核")
+
     p = Problem(classes=classes, teachers=teachers, courses=courses,
                 requirements=requirements, config=cfg, warnings=warnings_list,
-                hint_assign=hint_assign)
+                hint_assign=hint_assign, structured=structured_reqs)
     _post_process(p)
     return p
 

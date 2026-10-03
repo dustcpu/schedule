@@ -5,7 +5,7 @@
 - 可继续但需注意的返回 warnings
 """
 import math
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from ..config import NUM_DAYS, SELF_STUDY
 from .load import Problem, DataError, NO_TEACHER_SUBJECTS
@@ -150,5 +150,96 @@ def validate(p: Problem) -> List[str]:
     # 6) 自习
     if not any(c.subject == SELF_STUDY for c in p.courses):
         warnings.append("课程表未指定「自习」课时，已由内核用剩余格子自动补齐")
+
+    # 7) 结构化约束的可行性预检：必然无解的组合在这里秒级拒绝，
+    #    不让用户等满求解时限才看到一句"约束互相冲突"（同 §3c 的设计动机）。
+    # 7a) 教师连堂禁日：把所有禁日约束合并，某门连堂课的候选被禁光 → 致命
+    double_banned: Dict[Tuple[str, str, int], set] = {}
+    for sc in p.structured or []:
+        if sc.type != "teacher_no_double_day":
+            continue
+        for c in p.courses:
+            if c.subject in NO_TEACHER_SUBJECTS or c.block_len <= 1:
+                continue
+            dday = consec.day_of(c.subject)
+            if dday is None or dday not in sc.days:
+                continue
+            double_banned.setdefault(
+                (c.class_id, c.subject, dday), set()).add(sc.teacher)
+    for (cid, subj, dday), banned in sorted(double_banned.items()):
+        c = next(cc for cc in p.courses
+                 if cc.class_id == cid and cc.subject == subj)
+        cands = set(c.teacher_candidates or [])
+        if cands and cands <= banned:
+            raise DataError(
+                f"班级 {cid} 的「{subj}」所有候选教师都要求"
+                f"周{'一二三四五'[dday - 1]}不排连堂，而该学科连堂固定在这一天，"
+                f"无人可任课。请调整结构化约束（约束转换器对这类冲突有预警），"
+                f"或为该学科增加教师"
+            )
+
+    # 7e) 教师不可用 vs 连堂学科的"每天恰一节"结构：
+    #     连堂学科扣除连堂块后的单节课若被 H5c 强制"非连堂日每天 1 节"
+    #     （rest 恰好均分），则该科教师整日禁掉指定日或任一单课日 = 整科不可教。
+    #     此时按"有效教师数"重算 3c 的鸽笼下限，不足则提前报错。
+    #     （半天/单节的禁排总能把课挪到同日其他节，不构成整科禁教。）
+    eff_removed: Dict[str, set] = {}
+    for sc in p.structured or []:
+        if (sc.type != "teacher_unavailable" or sc.periods
+                or sc.teacher not in p.teachers):
+            continue
+        subj = p.teachers[sc.teacher].subject
+        courses_of_s = [c for c in p.courses
+                        if c.subject == subj and c.block_len > 1]
+        if not courses_of_s:
+            continue
+        dday = consec.day_of(subj)
+        other = [d for d in range(1, NUM_DAYS + 1) if d != dday]
+        forced = all(
+            (c.weekly - c.block_len * max(1, consec.blocks_per_day)) % len(other) == 0
+            for c in courses_of_s)
+        if not (forced and (dday in sc.days or any(d in sc.days for d in other))):
+            continue
+        cids = {c.class_id for c in courses_of_s}
+        need = math.ceil(len(cids) * max(1, consec.blocks_per_day)
+                         / (len(consec.allow_start_periods) or 1))
+        eff_removed.setdefault(subj, set()).add(sc.teacher)
+        have = len(cand_of.get(subj, ())) - len(eff_removed[subj])
+        if have < need:
+            raise DataError(
+                f"教师 {p.teacher_name(sc.teacher)}（{sc.teacher}）整周内有整天不可用，"
+                f"而「{subj}」的课在非连堂日被强制每天排 1 节，他实际上无法再任教该学科；"
+                f"扣除后「{subj}」只剩 {have} 位可用教师，"
+                f"但连堂至少需要 {need} 位。请调整不可用要求或增加该学科教师"
+            )
+
+    for sc in p.structured or []:
+        # 7b) 带班数上限 vs 显式指定的课程数
+        if sc.type == "teacher_max_classes":
+            locked_n = sum(1 for c in p.courses
+                           if c.locked and c.teacher_id == sc.teacher)
+            if locked_n > sc.max_classes:
+                raise DataError(
+                    f"教师 {p.teacher_name(sc.teacher)}（{sc.teacher}）已被显式指定 "
+                    f"{locked_n} 个班，超过结构化约束的上限 {sc.max_classes}，必然无解。"
+                    f"请放宽上限或取消部分教师指定"
+                )
+        # 7c) 教师全周不可用 vs 显式指定
+        if (sc.type == "teacher_unavailable" and sorted(sc.days) == [1, 2, 3, 4, 5]
+                and not sc.periods
+                and any(c.locked and c.teacher_id == sc.teacher for c in p.courses)):
+            raise DataError(
+                f"教师 {p.teacher_name(sc.teacher)}（{sc.teacher}）被设为全周不可用，"
+                f"但他有显式指定的课程，必然无解。"
+                f"请缩小不可用范围或取消该教师的指定"
+            )
+        # 7d) 班级禁排格要有自习可填（H1 要求每格恰好一门课）
+        if (sc.type == "class_unavailable" and not cfg.solver.self_study_fill
+                and not any(c.subject == SELF_STUDY and c.class_id == sc.class_id
+                            for c in p.courses)):
+            warnings.append(
+                f"班级 {sc.class_id} 的禁排格没有自习课可填（且未开启自习自动补齐），"
+                f"可能导致无解"
+            )
 
     return warnings

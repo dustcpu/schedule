@@ -122,6 +122,47 @@ def check_plan(problem, plan) -> list:
         elif idx != list(range(idx[0], idx[0] + len(idx))):
             errs.append(f"H5 连堂不连续: {c.class_id} {c.subject} 周{day} 位置{idx}")
 
+    # ---- 结构化额外约束（约束转换器 → schema v1）----
+    # 复核结果课表确实满足这些约束（跑通 ≠ 正确；与 model.py 的口径一一对应）
+    for sc in getattr(problem, "structured", None) or []:
+        if sc.type == "teacher_unavailable":
+            ps = sc.periods or periods
+            for d in sc.days:
+                for p in ps:
+                    for ci in problem.classes:
+                        s = plan.grid.get((ci.id, d, p))
+                        t = assign.get((ci.id, s)) if s else None
+                        if t == sc.teacher:
+                            errs.append(
+                                f"结构化约束违反: 教师{sc.teacher} 周{d} 第{p}节"
+                                f"被排在 {ci.id}（{s}），但要求该时段不排课")
+        elif sc.type == "teacher_no_double_day":
+            for c in problem.courses:
+                if c.block_len <= 1:
+                    continue
+                dday = consec.day_of(c.subject)
+                if dday is None or dday not in sc.days:
+                    continue
+                if assign.get((c.class_id, c.subject)) == sc.teacher:
+                    errs.append(
+                        f"结构化约束违反: 教师{sc.teacher} 教 {c.class_id} 的"
+                        f"{c.subject}（连堂固定在周{dday}），但要求该天不排连堂")
+        elif sc.type == "class_unavailable":
+            ps = sc.periods or periods
+            for d in sc.days:
+                for p in ps:
+                    got = plan.grid.get((sc.class_id, d, p))
+                    if got and got != "自习":
+                        errs.append(
+                            f"结构化约束违反: {sc.class_id} 周{d} 第{p}节"
+                            f"排了「{got}」，但要求不排课（只允许自习）")
+        elif sc.type == "teacher_max_classes":
+            n = sum(1 for v in assign.values() if v == sc.teacher)
+            if n > sc.max_classes:
+                errs.append(
+                    f"结构化约束违反: 教师{sc.teacher}实际带 {n} 个班，"
+                    f"超过上限 {sc.max_classes}")
+
     return errs
 
 

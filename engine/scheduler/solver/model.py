@@ -189,6 +189,13 @@ def build_model(p: Problem) -> ModelBundle:
             pool_by_subject.setdefault(s, set()).update(cands)
         locked_keys = {(c.class_id, c.subject) for c in p.courses if c.locked}
 
+        # 结构化"教师不可用"涉及的教师：下界放宽为 0。连堂学科被 H5c 强制
+        # "非连堂日每天恰好 1 节"时，整日禁排某天 = 该科不可教，lo=1 会制造
+        # 假性无解（2026-10-03 小模型实测）。下界只是启发式，放宽不影响正确性。
+        unavail_teachers = {sc.teacher
+                            for sc in (getattr(p, "structured", None) or [])
+                            if sc.type == "teacher_unavailable"}
+
         for t, pairs in cand_pairs_of_t.items():
             ti = p.teachers.get(t)
             s = ti.subject if ti else None
@@ -196,7 +203,7 @@ def build_model(p: Problem) -> ModelBundle:
                 continue
             n_course = count_by_subject[s]
             n_teacher = len(pool_by_subject.get(s, ()))
-            lo = 1 if n_course >= n_teacher else 0
+            lo = 1 if (n_course >= n_teacher and t not in unavail_teachers) else 0
             hi = math.ceil(n_course / max(1, n_teacher)) + 1
             # 显式指派可突破上界，否则会与用户意图冲突导致无解
             locked_n = sum(1 for pair in pairs if pair in locked_keys)
@@ -230,6 +237,8 @@ def build_model(p: Problem) -> ModelBundle:
 
     # ---------- H5 连堂 ----------
     consec = cfg.consecutive
+    # 连堂起始格变量按 (班级, 学科, 天) 归档，供「教师连堂禁日」等结构化约束引用
+    b_starts: Dict[Tuple[str, str, int], Dict[int, Any]] = {}
     for (cid, s), blen in block_len_of.items():
         if blen <= 1:
             continue
@@ -252,6 +261,7 @@ def build_model(p: Problem) -> ModelBundle:
             for k in range(blen):
                 if p0 + k in periods:
                     model.AddImplication(v, x[(cid, s, day, p0 + k)])
+        b_starts[(cid, s, day)] = B
         model.Add(sum(B.values()) == max(1, consec.blocks_per_day))
 
         # 该天该科的每一节都必须落在某个块内（杜绝零星单节）
@@ -306,6 +316,73 @@ def build_model(p: Problem) -> ModelBundle:
             )
         for d in other_days:
             model.Add(sum(x[(cid, s, d, per)] for per in periods) <= cap)
+
+    # ---------- 结构化额外约束（约束转换器 → schema v1，见 docs/约束能力清单.md） ----------
+    # 逐条落成 CP-SAT 约束并回显「已生效」——绝不静默（评估文档 §7 配套要求）。
+    # 可行性预检（全员禁连堂、锁定超上限等）在阶段2 validate.py 已秒级拒绝。
+    for sc in getattr(p, "structured", None) or []:
+        pairs = cand_pairs_of_t.get(sc.teacher, []) if sc.teacher else []
+        if sc.type in ("teacher_unavailable", "teacher_no_double_day",
+                       "teacher_max_classes") and not pairs:
+            warnings.append(
+                f"结构化约束未生效：{sc.describe(p)}（该教师没有进入任何课程的候选集）")
+            continue
+
+        if sc.type == "teacher_unavailable":
+            # H4（教师不可排时段）：该教师的每门候选课在禁排格不能由他上
+            ds = sc.days or list(days)
+            ps = sc.periods or list(periods)
+            for (cid, s) in pairs:
+                for d in ds:
+                    for per in ps:
+                        model.Add(x[(cid, s, d, per)] + y[(cid, s, sc.teacher)] <= 1)
+            warnings.append(f"结构化约束已生效：{sc.describe(p)}")
+
+        elif sc.type == "teacher_no_double_day":
+            # 教师的候选课里，连堂日落在禁日的：连堂起始格与任课互斥
+            # ——语义后果是该教师不担任该学科任课（连堂日按学科固定）。
+            hit = 0
+            for (cid, s) in pairs:
+                if block_len_of.get((cid, s), 0) <= 1:
+                    continue
+                dday = consec.day_of(s)
+                if dday is None or dday not in sc.days:
+                    continue
+                B = b_starts.get((cid, s, dday))
+                if not B:
+                    continue
+                for bv in B.values():
+                    model.Add(bv + y[(cid, s, sc.teacher)] <= 1)
+                hit += 1
+            if hit:
+                warnings.append(f"结构化约束已生效：{sc.describe(p)}"
+                                f"（涉及 {hit} 门候选课）")
+            else:
+                warnings.append(
+                    f"结构化约束未在模型层产生额外限制：{sc.describe(p)}"
+                    f"（候选已收缩、该教师无相关课程，或连堂不落在禁日）")
+
+        elif sc.type == "class_unavailable":
+            # 班级禁排格：所有学科置 0，格子由自习填充（H1 仍保证每格恰好一门）
+            subs = [s for s in subjects_by_class.get(sc.class_id, [])
+                    if s != SELF_STUDY]
+            if not subs:
+                warnings.append(
+                    f"结构化约束未生效：{sc.describe(p)}（该班级没有普通课程）")
+                continue
+            ds = sc.days or []
+            ps = sc.periods or list(periods)
+            for d in ds:
+                for per in ps:
+                    for s in subs:
+                        model.Add(x[(sc.class_id, s, d, per)] == 0)
+            warnings.append(f"结构化约束已生效：{sc.describe(p)}")
+
+        elif sc.type == "teacher_max_classes":
+            # 叠加在 H26 的自动推导上下界之上（n_t == sum(y)，此处再收紧）
+            model.Add(sum(y[(cid, s, sc.teacher)] for (cid, s) in pairs)
+                      <= sc.max_classes)
+            warnings.append(f"结构化约束已生效：{sc.describe(p)}")
 
     # ---------- 软约束 ----------
     # 辅助变量**无条件创建**（不再按权重 > 0 门控），权重只在目标层生效，

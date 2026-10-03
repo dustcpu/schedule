@@ -10,8 +10,9 @@
 检查项：
   1) 「特殊要求」解析：行首编号 / 普通文字 / 暂不支持的写法   （prefix_probe）
   2) 「信息课」等免教师学科 + 归一化 + 一次真实小排课        （issue_probe）
-  3) 打包好的 engine.exe 健壮性：异常不弹框、都写 status.json （guard_test）
-  4) --full：25 班完整排课 + verify_hard 校验交付文件
+  3) 约束转换器：自然语言 → 结构化约束的词典自测             （约束转换器/测试语料/自测.py）
+  4) 打包好的 engine.exe 健壮性：异常不弹框、都写 status.json （guard_test）
+  5) --full：25 班完整排课 + verify_hard 校验交付文件
 """
 import io
 import os
@@ -81,19 +82,27 @@ run_script(
     expect=["code=1", "归一化"],
 )
 
-# 3) 打包引擎的健壮性
+# 3) 约束转换器词典自测（自然语言 → 结构化约束）
 run_script(
-    "3) engine.exe 健壮性（异常不弹框、写出 status.json）",
+    "3) 约束转换器词典自测（自然语言 → 结构化约束）",
+    os.path.join(REPO, "约束转换器", "测试语料", "自测.py"),
+    expect=["自测通过"],
+    forbid=("Traceback", "ValueError", "自测未通过"),
+)
+
+# 4) 打包引擎的健壮性
+run_script(
+    "4) engine.exe 健壮性（异常不弹框、写出 status.json）",
     os.path.join(SCRIPTS_DIR_2, "guard_test.py"),
     args=[ENGINE_EXE],
     expect=["全部完成"],
     forbid=("Traceback", "ValueError", "又弹模态框"),
 )
 
-# 4) 可选：完整冒烟
+# 5) 可选：完整冒烟
 if FULL:
     run_script(
-        "4) 25 班完整排课 + verify_hard 校验交付文件",
+        "5) 25 班完整排课 + verify_hard 校验交付文件",
         os.path.join(HERE, "run_full_smoke.py"),
         expect=["交付文件校验通过"],
     )
