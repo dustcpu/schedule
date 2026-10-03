@@ -116,7 +116,8 @@ with open(os.path.join(inp, "requirements.txt"), "w", encoding="utf-8") as f:
 with open(os.path.join(inp, "hard_limits.json"), "w", encoding="utf-8") as f:
     json.dump(HL, f, ensure_ascii=False, indent=2)
 
-p = subprocess.run([r"D:\python\python.exe", os.path.join(ENGINE, "engine.py"), inp, out, "issue1"],
+# 引擎用当前解释器跑（uv run 或装好 ortools 的 python 均可；不再硬编码机器路径）
+p = subprocess.run([sys.executable, os.path.join(ENGINE, "engine.py"), inp, out, "issue1"],
                    cwd=ENGINE, capture_output=True, text=True, encoding="utf-8",
                    errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
 st = os.path.join(out, "status.json")
