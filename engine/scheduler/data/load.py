@@ -404,6 +404,17 @@ def _parse_teacher_constraints(text, teachers, classes):
         r'|[①-⑳]'                         # ① ② …
         r')\s*'
     )
+    # 2c 补全（2026-10-03 用户实测）：上面那两条判定都够不着**用自然语言写的要求**。
+    #   用户写「T48不想周五上课」——既不含 教/=，也没写编号 → 三条都不命中 → 静默消失。
+    #   用户以为生效了、实际没有，这是最糟的一种失败（比直接报错还糟）。
+    #   这里补一条启发式：行里出现"星期词"或"要求动词 / 连堂词 / 数量限制词"，
+    #   就当作一条要求，归入"当前不支持"并给出改写指引。**宁可多说一句，也不要静默。**
+    #   （普通说明如「年级：高二」「2026年秋季作息」不含这些词，不会被误报。）
+    day_word_re = re.compile(r'周[一二三四五六日天]|星期[一二三四五六日天]')
+    req_hint_re = re.compile(
+        r'不排|不上|没空|不空|请假|有事|外出|教研|调休|不能|禁止|避免|不要|别排|'
+        r'连堂|连排|连着|双节|最多|最少|至少|不超过|上限|下限'
+    )
     for line in text.splitlines():
         raw = line
         line = line.strip().lstrip('\ufeff')
@@ -420,7 +431,9 @@ def _parse_teacher_constraints(text, teachers, classes):
             #   但要求类型（如"某班每周加一节 X"）当前不支持。普通说明（如「年级：高二」）不打扰。
             if re.search(r'[=教]', line):
                 unparsed.append(line)
-            elif list_mark_re.match(raw.strip()):
+            elif (list_mark_re.match(raw.strip())
+                  or day_word_re.search(line)
+                  or req_hint_re.search(line)):
                 unsupported.append(raw.strip())
             continue
         t_str = m.group(1).strip()
@@ -430,7 +443,18 @@ def _parse_teacher_constraints(text, teachers, classes):
             # 容忍 T030 ↔ T30 这类"补零/去零"的写法差异
             tid = _resolve_id(t_str, list(teachers))
         if not tid:
-            unparsed.append(line)
+            # 收严（2026-10-03）：上面那个含"教"的正则会把「本表由教务处维护」
+            # 也切成「本表由教务 / 务维护」两段，左半段当然不是教师 —— 但把它报成
+            # "像是教师指定"只会让人困惑。只在左半段**确实像教师**时才这么报：
+            # 是 T30 / C05 这样的 ID，或"张三 / 张三老师"这样的姓名形状。
+            looks_like_teacher = bool(
+                re.search(r'[TCtc]\d{1,4}', t_str)
+                or re.fullmatch(r'[\u4e00-\u9fa5]{2,4}老师?', t_str)
+            )
+            if looks_like_teacher or '=' in line:
+                unparsed.append(line)
+            elif day_word_re.search(line) or req_hint_re.search(line):
+                unsupported.append(raw.strip())
             continue
         cid = None
         subj = normalize_subject(rest)
@@ -1040,10 +1064,14 @@ def load_problem(in_dir):
                 f"另有 {len(unparsed_specs) - explained} 行教师指定没能解析，已忽略。")
 
     if unsupported_specs:
+        # 用户 2026-10-03 实测：写「T48不想周五上课」时这行被静默丢弃，用户只能靠
+        # "结果好像少了点什么"去猜。这里补上告警，并把"该改成什么"一次说清。
         show = "；".join(unsupported_specs[:3]) + ("…" if len(unsupported_specs) > 3 else "")
         warnings_list.append(
-            f"额外约束中有 {len(unsupported_specs)} 行要求当前不支持、未生效：{show}。"
-            f"目前仅支持「教师ID教班级ID学科」格式的教师指定（如 T001教C01语文）。")
+            f"额外约束中有 {len(unsupported_specs)} 行没有生效：{show}。"
+            f"目前只认两种写法——①「教师ID教班级ID学科」（如 T001教C01语文）；"
+            f"② JSON 结构化约束（把一段 JSON 整段粘进「特殊要求」，格式见界面「书写规范」）。"
+            f"这类自然语言可先用仓库里的离线转换器（约束转换器/nl2req.py）转成 JSON 再用。")
 
     if structured_reqs:
         _kind_names = {"teacher_unavailable": "教师不可用",

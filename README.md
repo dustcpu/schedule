@@ -83,7 +83,8 @@ schedule/
 ├── engine/                      # 算法引擎（Python + OR-Tools CP-SAT）
 │   ├── engine.py                # 引擎入口：load → validate → build → solve → export
 │   ├── build_exe.py             # ★ 打包成 engine.exe（改完引擎源码必须重跑，见「协作说明」）
-│   ├── validate_input.py        # 上传后由外壳调用的输入预检（输出 JSON）
+│   ├── validate_input.py        # 输入预检的实现；由外壳经 `engine --validate <xlsx>`
+│   │                            #   子命令调用（不再是外壳直接起 python 跑它）
 │   ├── verify_hard.py           # 硬约束校验工具
 │   ├── mock_engine.py           # 开发占位引擎（找不到真引擎时的兜底）
 │   ├── make_sample_input.py     # 生成示例输入
@@ -158,7 +159,7 @@ schedule/
 用户在界面上选 input.xlsx + 填特殊要求 + 选输出目录
                     ↓
 排课助手.exe（外壳）
-  ├─ 选完文件立即调 validate_input.py 预检（格式/缺列/周课时超额）
+  ├─ 选完文件立即调 engine.exe --validate 预检（格式/缺列/周课时超额）
   ├─ 写 hard_limits.json（作息 / 固定课 / 连堂规则 / 求解参数 / 额外硬约束）
   ├─ 写 requirements.txt（特殊要求 + 额外硬约束）
   └─ 调 engine.exe <输入目录> <输出目录> <任务ID>

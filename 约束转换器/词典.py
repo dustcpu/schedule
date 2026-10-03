@@ -122,6 +122,19 @@ T_OFF_KW = ("不上课", "不排课", "不上", "不排", "不想上", "不要�
 C_OFF_KW = ("不排课", "不上课", "不要排", "不排", "不安排课", "留空", "空着",
             "安排活动", "搞活动", "组织活动", "考试", "测验", "大扫除", "活动课")
 
+# 追加（2026-10-03 用户实测）：上面 T_OFF_KW 里的词都是**连写**——
+# 不上课 / 不想上 / 不排课。而教务很常写「不想周五上课」：否定词和「上课」
+# 被星期词隔开，一个关键词都命中不了，整条要求就被判成"认不出"。
+# 这里补这种间隔写法。
+# ⚠️ 结尾不列「上」「排」单字——否则「不想周二上连堂」也会被算成"整天不可用"。
+_T_OFF_GAP_RE = re.compile(
+    r"(?:不想|不要|不能|不会|别|避免|避开|禁止)"
+    r"\s*"
+    r"(?:周[一二三四五六日天1-5]|星期[一二三四五六日天]|礼拜[一二三四五六日天])"
+    r"[^，。；;、\s]{0,6}?"
+    r"(?:上课|排课|有课|没课|值班|坐班)"
+)
+
 # 指定任课的连接符（与引擎一致：教 / =）
 _ASSIGN_RE = re.compile(r"^(.+?)\s*[=教]\s*(.+)$")
 
@@ -292,8 +305,8 @@ def parse_line(raw: str, ctx: ParseContext):
                 out.append(c)
             return ok(out)
 
-    # ④ 教师不可用（例：张老师周二没空 / 张老师周二下午不排课）
-    if tid and any(k in line for k in T_OFF_KW):
+    # ④ 教师不可用（例：张老师周二没空 / 张老师周二下午不排课 / 张老师不想周五上课）
+    if tid and (any(k in line for k in T_OFF_KW) or _T_OFF_GAP_RE.search(line)):
         days = extract_days(line)
         if not days:
             return fail("认出老师，但没认出星期。请写成「某老师周二不上课」"
@@ -449,4 +462,8 @@ periods 用节次数字，上午为 1-5、下午为 6-8）：
 def build_ai_prompt(lines):
     """未命中行的提示词（行内姓名必须已由调用方替换为编号后再传入）。"""
     numbered = "\n".join(f"{i}. {ln}" for i, ln in enumerate(lines, 1))
-    return AI_PROMPT_TEMPLATE.format(lines=numbered)
+    # ⚠️ 不能用 str.format：模板正文里含 JSON 示例（{"version": 1, ...}），
+    #    花括号会被当成格式字段 → KeyError: '"version"'（2026-10-03 实测）。
+    #    一旦触发，--line 与 --text 两个模式都会崩，等于「认不出的行走 AI 兜底」
+    #    这条路完全不可用。改用 replace 占位符：不必要求模板作者记得转义花括号。
+    return AI_PROMPT_TEMPLATE.replace("{lines}", numbered)

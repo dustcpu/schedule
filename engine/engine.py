@@ -8,6 +8,7 @@
 输出：result.xlsx / result.pdf / status.json（协议 §4）
 进程退出码恒为 0，业务结果一律以 status.json 的 code 表达（协议 §6）。
 """
+import json
 import os
 import sys
 import time
@@ -107,8 +108,51 @@ def _crash(e: Exception, what: str) -> str:
             f"若反复出现，请把输入的 Excel 发给技术支持并附上错误编号 {code}。")
 
 
+# ==================== 子命令：输入预检 ====================
+
+def _emit_json(payload) -> None:
+    """按 UTF-8 往 stdout 写 JSON（不依赖 locale / 环境变量，理由同 validate_input._emit）。"""
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    buf = getattr(sys.stdout, "buffer", None)
+    if buf is not None:
+        buf.write(data)
+        buf.flush()
+    elif sys.stdout is not None:
+        sys.stdout.write(data.decode("utf-8", "replace"))
+
+
+def _run_validate(argv) -> int:
+    """子命令 `engine --validate <xlsx>`：给外壳做输入预检，stdout 只输出一行 JSON。
+
+    为什么并进引擎、而不是像以前那样单跑 `../engine/validate_input.py`：
+    外壳原先按**编译期源码路径**找那个 .py、再用系统 `python` 启动它 ——
+    路径是构建机的、用户机器也没有 Python，所以预检在安装版必然失败。
+    本 exe 里已经打包了 openpyxl，由它来校验，开发版和安装版走同一条路径。
+    """
+    path = argv[0] if argv else ""
+    try:
+        from validate_input import validate
+        payload = validate(path)
+    except Exception as e:          # 预检出错不该让 exe 崩（--noconsole 会弹模态框卡住外壳）
+        eerr(f"[engine] 输入预检失败 {type(e).__name__}: {e}")
+        eerr(traceback.format_exc())
+        payload = {"valid": False, "errors": [f"输入预检失败: {e}"],
+                   "warnings": [], "stats": {}}
+    try:
+        _emit_json(payload)
+    except Exception:
+        pass
+    return 0
+
+
 def main() -> int:
     global _log_file, _start_time
+
+    # 子命令分流必须放在最前面（含版本号之前）——stdout 只能是那一个 JSON，
+    # 混进别的行外壳就解析不了。
+    if len(sys.argv) >= 2 and sys.argv[1] == "--validate":
+        return _run_validate(sys.argv[2:])
+
     _start_time = time.time()
 
     # 协议 §10：版本号打印到 stdout 第一行

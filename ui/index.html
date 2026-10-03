@@ -12,18 +12,24 @@
   </header>
 
   <main>
-    <!-- 输入文件要求说明 -->
+    <!-- 输入文件要求说明
+         默认折叠：格式说明看一次就够，折叠后首屏留给「① 上传数据文件」，
+         需要时点开，模板下载按钮留在外面（不能藏进折叠区，否则不好找）。 -->
     <section class="card info-card">
-      <div class="step">输入文件要求</div>
-      <div class="info-content">
-        <p>请上传包含以下三个 sheet 的 <strong>.xlsx</strong> 文件：</p>
-        <ul>
-          <li><strong>教师</strong>：教师ID、教师姓名、任教学科、职务（只需填语数英、物化生政史地等参与排课的教师，体育/艺术无需填写）</li>
-          <li><strong>班级</strong>：班级ID、班级名称、年级、班主任、选科（如物化生、政史地）</li>
-          <li><strong>课时标准</strong>：学科、选考周课时、非选考周课时、连堂节数、连堂日</li>
-        </ul>
-        <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并按教师工作量均衡自动分配任课教师。如需特殊指定（如某某老师教尖子班），可在下方「特殊要求」中输入，格式：教师ID教班级ID学科（如 T30教C05英语）。体育活动为每天第9节固定附加，不参与排课。</p>
-        <button id="btn-download-template" class="ghost-btn" style="margin-top:8px;">📥 下载输入模板</button>
+      <div class="info-head">
+        <details class="info-fold">
+          <summary>输入文件要求<span class="fold-hint">（点开看格式说明）</span></summary>
+          <div class="info-content">
+            <p>请上传包含以下三个 sheet 的 <strong>.xlsx</strong> 文件：</p>
+            <ul>
+              <li><strong>教师</strong>：教师ID、教师姓名、任教学科、职务（只需填语数英、物化生政史地等参与排课的教师，体育/艺术无需填写）</li>
+              <li><strong>班级</strong>：班级ID、班级名称、年级、班主任、选科（如物化生、政史地）</li>
+              <li><strong>课时标准</strong>：学科、选考周课时、非选考周课时、连堂节数、连堂日</li>
+            </ul>
+            <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并由排课引擎在排课的同时决定各班各科的任课教师。如需特殊指定（如某某老师教某个班），可在下方「特殊要求」中输入。体育活动为每天附加一节，不参与排课。</p>
+          </div>
+        </details>
+        <button id="btn-download-template" class="ghost-btn">下载输入模板</button>
       </div>
     </section>
 
@@ -41,28 +47,84 @@
       <div class="step">② 特殊要求（可选）</div>
       <textarea id="requirements" placeholder="当前支持「指定某位老师教某个班的某个学科」，每行一条，格式：&#10;· 教师ID教班级ID学科（例如 T30教C05英语）&#10;· 行首加不加编号 1. 2. 都能识别&#10;选好输入文件后，下方「书写规范」会用你表里真实的教师ID举例"></textarea>
       <details class="spec-help">
-        <summary>书写规范（点开看：支持哪些写法、哪些暂不支持）</summary>
+        <summary>书写规范（点开看：支持哪些写法、哪些目前做不到）</summary>
         <div class="spec-body">
-          <p id="spec-ids" class="spec-ids">选好输入文件后，这里会用**你表里真实的**教师ID、班级ID举例。</p>
-          <p class="spec-title">✔ 支持的写法：指定某位老师教某个班的某个学科</p>
+          <p id="spec-ids" class="spec-ids">选好输入文件后，这里会用你表里真实的教师ID、班级ID举例。</p>
+
+          <p class="spec-title">写法一：指定某位老师教某个班的某个学科</p>
           <ul>
-            <li><code>教师ID</code> + <code>教</code> + <code>班级ID</code> + <code>学科</code>
-                —— 例如 <code id="spec-example">T30教C05英语</code></li>
+            <li><code id="spec-example">T30教C05英语</code>
+                —— <code>教师ID</code> + <code>教</code> + <code>班级ID</code> + <code>学科</code></li>
             <li>用等号写效果一样：<code id="spec-example2">T30=C05英语</code></li>
             <li>也可以写教师姓名 + 班级名称：<code>张老师教高二(1)班英语</code></li>
             <li>每行一条；行首编号写不写都行（<code>1.T30教C05英语</code> 一样能识别）</li>
             <li>⚠️ <b>ID 照抄「教师」「班级」表里的写法</b>：表里是 <code>T30</code> 就写 <code>T30</code>，
-                不要自己补成 <code>T030</code>（补零的写法现在也能认，但以表里为准最稳）</li>
+                不要自己补成 <code>T030</code>（补零的写法也能认，但以表里为准最稳）</li>
           </ul>
-          <p class="spec-warn">✘ 暂不支持（写了会提示"这条没生效"，不会排进课表）：</p>
+
+          <p class="spec-title">写法二：其它要求用「结构化写法」（推荐）</p>
+          <p class="spec-alert">⚠️ 直接写中文句子（如「张老师周二没空」「T48不想周五上课」）
+             <b>不会生效</b> —— 引擎只认「教师指定」和下面这种 JSON 两种写法。
+             不方便手写 JSON 时，用下面「不会写？用 AI 帮你转」那段：软件会生成一份
+             <b>已脱敏</b>的提示词，复制给任意 AI，把返回的 JSON 粘回来即可。</p>
+          <p>下面这种 JSON 可以直接整段粘进上面的输入框（<b>连开头结尾的
+             <code>```json</code> / <code>```</code> 一起粘</b>），能精确表达 5 类要求：
+             老师某天或某节没空、老师不想某天上连堂、某班某天或某节不排课（该格排自习）、
+             老师最多带几个班。</p>
+          <pre class="spec-code">```json
+{
+  "version": 1,
+  "constraints": [
+    {"type": "teacher_unavailable",   "teacher": "T30", "days": [2]},
+    {"type": "teacher_no_double_day", "teacher": "T30", "days": [2]},
+    {"type": "class_unavailable",     "class": "C01", "day": 5, "periods": [7, 8]},
+    {"type": "teacher_max_classes",   "teacher": "T30", "max": 2}
+  ]
+}
+```</pre>
+          <ul>
+            <li><code>days</code> 用 1~5 表示周一到周五；<code>periods</code> 省略＝全天，
+                节次 1~8（上午 1~5、下午 6~8）</li>
+            <li>不想手写 JSON？用下面「不会写？用 AI 帮你转」——它会生成一段
+                <b>已脱敏</b>（姓名自动换成编号）的提示词，复制给任意 AI 即可</li>
+            <li>写错的那条会被单独跳过并说明原因，不影响其它条目</li>
+          </ul>
+
+          <p class="spec-warn">✘ 目前做不到（写了会提示"这条没生效"，不会排进课表）：</p>
           <ul>
             <li>「某老师教的班里必须包含某个班」—— 如：教师T30所教的班级里必须有一个是C05</li>
-            <li>「某位老师最多/最少带几个班」这类数量限制</li>
+            <li>「两位老师必须 / 不能教同一年级」</li>
+            <li>「如果……就……」这类条件要求</li>
             <li>「某类班每周加一节某课」—— 请改在「课时标准」表的「非选考周课时」里填数字</li>
           </ul>
+
           <p>普通说明文字（如「年级：高二」「2026年秋季作息」）不影响排课，也不会误报。</p>
           <p>课表上的学科按标准名显示：<b>信息 / 心理 / 体育 / 艺术</b>
              （「信息课」「信息技术」「计算机」都会按「信息」处理；「心理健康」按「心理」）。</p>
+        </div>
+      </details>
+
+      <!-- 「用 AI 转」（2026-10-04 用户拍板）：主路径改为「用外部 AI 把中文转成 JSON，
+           软件只负责校验与生效」，离线词典降级为兜底。
+           刻意把提示词**明文展示在文本框里**、让用户自己选中复制：
+           便于查看和调试，也不碰剪贴板 API（Tauri webview 里可能被拒）。 -->
+      <details class="ai-help">
+        <summary>不会写？用 AI 帮你转成结构化写法</summary>
+        <div class="ai-body">
+          <p>三步：</p>
+          <ol>
+            <li>点「生成提示词」——软件会把你写的要求里<b>教师姓名 / 班级名自动换成编号</b>
+                （不泄露姓名），并附上你表里的教师、班级清单；</li>
+            <li>在下面的框里<b>全选复制</b>，发给任意 AI（豆包、文心一言、Kimi 等都可以）；</li>
+            <li>把 AI 返回的 JSON <b>整段粘回上面的输入框</b>（连 <code>```json</code> 那几行一起），
+                再点「开始排课」。</li>
+          </ol>
+          <div class="ai-actions">
+            <button id="btn-gen-prompt" class="primary-btn">生成提示词</button>
+            <button id="btn-sel-prompt" class="ghost-btn" disabled>全选</button>
+          </div>
+          <textarea id="ai-prompt" readonly placeholder="点「生成提示词」后，这里会显示可复制的内容。（需要先在 ① 里选好输入文件）"></textarea>
+          <p id="ai-note" class="ai-note"></p>
         </div>
       </details>
     </section>
@@ -75,21 +137,38 @@
       </div>
     </section>
 
-    <!-- 当前硬限制摘要 -->
-    <div id="hard-limits-summary" class="hl-summary"></div>
+    <!-- 当前硬限制摘要（可点击进设置修改：原先是一行死文字，想改却找不到入口） -->
+    <div class="hl-summary">
+      <span id="hl-text"></span>
+      <button id="btn-edit-limits" class="link-btn">修改设置</button>
+    </div>
+
+    <!-- 状态与进度放在「开始排课」上面：提示（如「请先选择文件」）出现在视线要经过的地方，
+         之前放在按钮下面，容易被漏看。 -->
+    <div id="status" class="status ready">就绪</div>
+
+    <!-- 失败时的出口：去看引擎日志。
+         外壳会把 <任务ID>.engine.log 留在日志目录，以前没有入口，
+         用户只能看着一句"排课失败"，连"卡在哪一步"都无从判断。 -->
+    <div id="log-hint" class="log-hint hidden">
+      失败详情已记入日志，<button id="btn-open-logs" class="link-btn">打开日志文件夹</button>
+    </div>
+
+    <!-- 排课进度条（2026-10-01）：前端轮询外壳的 get_progress 命令驱动。
+         注意不要改回 Tauri 事件——本项目没有 capabilities 配置，事件会被静默拒绝。 -->
+    <div id="progress" class="progress hidden">
+      <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+      <div id="progress-text" class="progress-text"></div>
+    </div>
 
     <button id="btn-run" class="big-btn">
       <span id="btn-run-text">开始排课</span>
       <span id="btn-spinner" class="spinner hidden"></span>
     </button>
 
-    <div id="status" class="status ready">就绪</div>
-
-    <!-- 排课进度条（问题3，2026-10-01）：由外壳的 scheduler-progress 事件驱动 -->
-    <div id="progress" class="progress hidden">
-      <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
-      <div id="progress-text" class="progress-text"></div>
-    </div>
+    <!-- 取消排课：只在排课中出现。一趟约 3 分钟，中途想放弃以前只能关窗口，
+         而关闭默认是收进托盘——进程还占着，不知道的人会以为程序卡死了。 -->
+    <button id="btn-cancel" class="ghost-btn danger cancel-btn hidden">取消排课</button>
 
     <section id="result-area" class="result hidden">
       <div class="step">结果文件</div>
@@ -113,7 +192,6 @@
 
   <script>
     const { invoke } = window.__TAURI__.core;
-    const { getCurrentWindow } = window.__TAURI__.window;
 
     const $ = id => document.getElementById(id);
 
@@ -124,16 +202,29 @@
     //    停在初始文案（用户实测踩到）。应用自己的命令不走 ACL，轮询这条路是稳的。
     let progressTimer = null;
     let runStartedAt = 0;
+    let lastProgressText = '';
 
     function fmtElapsed(sec) {
       if (sec < 60) return sec + ' 秒';
       return Math.floor(sec / 60) + ' 分 ' + String(sec % 60).padStart(2, '0') + ' 秒';
     }
 
+    // 排课进行中：锁住其它会改变输入或参数的入口，
+    // 免得跑到一半把条件改了，界面显示的和这次实际用的对不上。
+    function setBusy(busy) {
+      ['btn-pick-file', 'btn-pick-dir', 'btn-settings',
+       'btn-download-template', 'btn-edit-limits'].forEach(id => {
+        const el = $(id);
+        if (el) el.disabled = busy;
+      });
+    }
+
     function showProgress() {
       $('progress').classList.remove('hidden');
+      $('progress-fill').classList.remove('stalled');
       $('progress-fill').style.width = '0%';
-      $('progress-text').textContent = '已用 0 秒 · 正在准备…';
+      lastProgressText = '正在准备…';
+      $('progress-text').textContent = '已用 0 秒 · ' + lastProgressText;
       runStartedAt = Date.now();
     }
 
@@ -149,9 +240,8 @@
       const elapsed = runStartedAt ? Math.round((Date.now() - runStartedAt) / 1000) : 0;
       const pct = p ? Math.max(0, Math.min(100, Number(p.percent) || 0)) : 0;
       $('progress-fill').style.width = pct + '%';
-      const msg = (p && p.message) ? p.message : '正在启动排课引擎…';
-      $('progress-text').textContent =
-        '已用 ' + fmtElapsed(elapsed) + ' · ' + msg + '（' + pct + '%）';
+      lastProgressText = (p && p.message) ? p.message : '正在启动排课引擎…';
+      $('progress-text').textContent = '已用 ' + fmtElapsed(elapsed) + ' · ' + lastProgressText;
     }
 
     function startProgressPolling() {
@@ -170,7 +260,7 @@
     // ---- 「书写规范」用用户自己表里的真实 ID 举例 ----
     // 用户 2026-10-01 实测：文档里举例写 T001，而他表里是 T30，照着写反而对不上、
     // 整条要求被忽略。示例必须来自他自己的输入文件。
-    let specSamples = { teachers: [], classes: [] };
+    let specSamples = { teachers: [], classes: [], teacherMap: {}, classMap: {} };
 
     function renderSpecSamples() {
       const t = specSamples.teachers || [];
@@ -187,6 +277,100 @@
         box.classList.remove('spec-ids-ok');
       }
     }
+
+    // ---- 「用 AI 转」：生成脱敏提示词（2026-10-04）----
+    // 方向调整（用户拍板）：主路径改为「用外部 AI 把中文转成 JSON，软件只负责校验与生效」，
+    // 离线词典降级为兜底。软件本地只做两件能做的事：
+    //   ① 把要求里的教师姓名 / 班级名**先替换成编号**（脱敏 —— 姓名属校方数据，不能外发）；
+    //   ② 附上教师 / 班级清单，套进固定提示词。
+    // 软件自身**不联网、不调用任何模型**："发给 AI" 这一步由用户手动完成。
+    const AI_PROMPT_TEMPLATE = `你是一名高中排课约束解析助手。下面是教务写的排课要求（姓名已替换为编号）。
+请把每一条转换成结构化约束，只输出一个 JSON 对象，不要任何解释、不要 markdown 代码块。
+
+输出格式（version 固定为 1）：
+{"version": 1, "constraints": [ ... ], "unrecognized": [ ... ]}
+
+只允许出现以下 5 种 type，字段名必须照抄：
+
+1. 指定任课
+   {"type":"assign_teacher","teacher":"T30","class":"C05","subject":"数学"}
+2. 教师某天/某节不上课（periods 省略 = 全天）
+   {"type":"teacher_unavailable","teacher":"T30","days":[2],"periods":[6,7,8]}
+3. 教师不想某天上连堂
+   {"type":"teacher_no_double_day","teacher":"T30","days":[2]}
+4. 某班某天/某节不排课（该格排自习；day 是单数，一天一条）
+   {"type":"class_unavailable","class":"C01","day":5,"periods":[7,8]}
+5. 教师最多带几个班
+   {"type":"teacher_max_classes","teacher":"T30","max":2}
+
+严格规则：
+- days 用 1-5 表示周一到周五；节次 1-8（上午 1-5、下午 6-8）。
+- teacher 必须来自下面的教师清单，class 必须来自班级清单。
+- 认不出、没把握、或不属于这 5 类的要求，一律原句放进 "unrecognized"，绝对不要编造字段或类型。
+- 一句话可能拆成多条（如「周一和周三」拆两条）。
+
+教师清单（编号 TAB 姓名）：
+{TEACHERS}
+
+班级清单（编号 TAB 名称）：
+{CLASSES}
+
+待解析的要求：
+{LINES}`;
+
+    // 用表里的姓名把中文要求里的姓名换成编号。
+    // ⚠️ 先替换**较长**的串（班级名通常比教师名长），否则短串先命中会把长串切坏。
+    function desensitize(text) {
+      const pairs = [
+        ...Object.entries(specSamples.classMap || {}),
+        ...Object.entries(specSamples.teacherMap || {})
+      ].filter(([n, id]) => n && n !== id).sort((a, b) => b[0].length - a[0].length);
+      let out = text;
+      let hit = 0;
+      for (const [name, id] of pairs) {
+        if (out.indexOf(name) >= 0) {
+          out = out.split(name).join(id);
+          hit++;
+        }
+      }
+      return { text: out, hit };
+    }
+
+    $('btn-gen-prompt').onclick = () => {
+      const note = $('ai-note');
+      const raw = $('requirements').value.trim();
+      if (!raw) {
+        note.textContent = '请先在上面的输入框里写下要求（一行一条）。';
+        return;
+      }
+      const tMap = specSamples.teacherMap || {};
+      const cMap = specSamples.classMap || {};
+      if (!Object.keys(tMap).length && !Object.keys(cMap).length) {
+        note.textContent = '还没拿到你表里的教师/班级清单 —— 请先在「① 上传数据文件」里选好输入文件。';
+        return;
+      }
+      const d = desensitize(raw);
+      const fmt = m => Object.entries(m).map(([n, id]) => id + '\t' + n).join('\n');
+      const lines = d.text.split('\n').map(s => s.trim()).filter(Boolean)
+        .map((s, i) => (i + 1) + '. ' + s).join('\n');
+
+      $('ai-prompt').value = AI_PROMPT_TEMPLATE
+        .replace('{TEACHERS}', fmt(tMap))
+        .replace('{CLASSES}', fmt(cMap))
+        .replace('{LINES}', lines);
+      $('btn-sel-prompt').disabled = false;
+      note.textContent = d.hit > 0
+        ? '已把 ' + d.hit + ' 处姓名/班级名替换成编号（真实姓名不会外发）。'
+        : '没检测到需要脱敏的姓名（你写的已经是编号，或姓名与表里不一致）。';
+    };
+
+    // 只做「全选」，不碰剪贴板 —— Tauri webview 里 navigator.clipboard 可能因安全
+    // 上下文被拒；而且这种「明文展示 + 自己选中复制」的方式便于查看和调试。
+    $('btn-sel-prompt').onclick = () => {
+      const t = $('ai-prompt');
+      t.focus();
+      t.select();
+    };
 
     let inputPath = null;
     let outputDir = null;
@@ -221,16 +405,23 @@
       const s = hl.schedule;
       const c = hl.consecutive;
       const text = `当前生效：${s.periods_per_day}节/天，上午${s.morning_start}-${s.morning_end}，下午${s.afternoon_start}-${s.afternoon_end}；连堂：${DAY_NAMES[c.math_day]}数学、${DAY_NAMES[c.chinese_day]}语文、${DAY_NAMES[c.english_day]}英语`;
-      $('hard-limits-summary').textContent = text;
+      $('hl-text').textContent = text;
     }
+
+    $('btn-edit-limits').onclick = async () => {
+      await invoke('open_settings');
+      setTimeout(refreshConfig, 500);
+    };
 
     async function showFileSize(path) {
       const info = await invoke('get_file_info', { path });
+      const el = $('file-size');
       if (info.exists) {
-        $('file-size').textContent = '文件大小：' + info.size_human;
-        $('file-size').style.color = '#16a34a';
+        el.textContent = '文件大小：' + info.size_human;
+        el.classList.add('ok');
       } else {
-        $('file-size').textContent = '';
+        el.textContent = '';
+        el.classList.remove('ok');
       }
     }
 
@@ -252,12 +443,14 @@
         return;
       }
 
-        const parts = [];
-        const st = r.stats || {};
-        // 「书写规范」用真实 ID 举例（见 renderSpecSamples）
-        specSamples.teachers = st.teacher_ids || [];
-        specSamples.classes = st.class_ids || [];
-        renderSpecSamples();
+      const parts = [];
+      const st = r.stats || {};
+      // 「书写规范」用真实 ID 举例（见 renderSpecSamples）
+      specSamples.teachers = st.teacher_ids || [];
+      specSamples.classes = st.class_ids || [];
+      specSamples.teacherMap = st.teacher_map || {};
+      specSamples.classMap = st.class_map || {};
+      renderSpecSamples();
       if (st.teachers != null) parts.push('教师 ' + st.teachers + ' 位');
       if (st.classes != null) parts.push('班级 ' + st.classes + ' 个');
       if (st.subjects != null) parts.push('学科 ' + st.subjects + ' 门');
@@ -281,7 +474,8 @@
           r.errors.map(e => '· ' + e).join('<br>') + '</div>';
       }
       if (r.warnings && r.warnings.length) {
-        html += '<div class="validate-subjects" style="color:#b45309;">' +
+        // ⚠️ 不要再用 inline style 写死颜色：这里有现成的 .validate-warnings
+        html += '<div class="validate-warnings">' +
           r.warnings.map(w => '· ' + w).join('<br>') + '</div>';
       }
       box.innerHTML = html;
@@ -345,6 +539,13 @@
       const area = $('result-area');
       const cards = $('result-cards');
       cards.innerHTML = '';
+
+      // 只有真有内容才显示结果区。失败/取消时 plans 与文件都为空，
+      // 显示出来只剩一个空标题加一片空白（原先就是这个样子）。
+      if (!(r.plans && r.plans.length) && !r.output_xlsx && !r.output_pdf) {
+        area.classList.add('hidden');
+        return;
+      }
 
       // 方案列表
       if (r.plans && r.plans.length) {
@@ -440,12 +641,18 @@
       }
       const btn = $('btn-run');
       btn.disabled = true;
+      setBusy(true);
       $('btn-run-text').textContent = '排课中...';
       $('btn-spinner').classList.remove('hidden');
-      setStatus('running', '正在排课，请稍候…（25 个班约需 3 分钟，期间请勿关闭窗口）');
+      const cancelBtn = $('btn-cancel');
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = '取消排课';
+      cancelBtn.classList.remove('hidden');
+      setStatus('running', '正在排课，请稍候…（25 个班约需 3 分钟）');
       showProgress();
       startProgressPolling();
       $('result-area').classList.add('hidden');
+      $('log-hint').classList.add('hidden');
 
       try {
         const r = await invoke('run_scheduler', {
@@ -457,6 +664,9 @@
           setStatus('success', '排课完成：' + r.message);
         } else if (r.code === 1) {
           setStatus('warn', '排课完成（有警告）：' + r.message, r.warnings);
+        } else if ((r.message || '').indexOf('已取消') === 0) {
+          // 用户自己按的取消，不是出错 —— 用中性样式，不要吓人
+          setStatus('ready', r.message);
         } else {
           setStatus('error', '排课失败：' + r.message, r.warnings);
         }
@@ -465,33 +675,59 @@
         setStatus('error', '调用失败：' + e);
       } finally {
         btn.disabled = false;
+        setBusy(false);
         $('btn-spinner').classList.add('hidden');
-        hideProgress();
-        // 失败时按钮显示「重试」，成功显示「开始排课」
+        cancelBtn.classList.add('hidden');
         const failed = $('status').classList.contains('error');
-        $('btn-run-text').textContent = failed ? '🔄 重试' : '开始排课';
+        // 失败时给个出口：日志目录里有本次的引擎日志（外壳保留的）
+        $('log-hint').classList.toggle('hidden', !failed);
+        if (failed) {
+          // 失败时保留进度条与最后一条进度：让人看得见停在哪一步。
+          // （原先无条件 hideProgress()，用户只看到一句失败结论，无从判断是数据问题还是引擎问题。）
+          if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+          $('progress-fill').classList.add('stalled');
+          $('progress-text').textContent =
+            (lastProgressText || '未开始') + '　——　排课未完成';
+        } else {
+          hideProgress();
+        }
+        $('btn-run-text').textContent = failed ? '重试' : '开始排课';
       }
     };
 
-    // 窗口大小和位置记忆（防抖保存）
-    let saveTimer = null;
-    function scheduleSaveWindowState() {
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(async () => {
-        try {
-          const win = getCurrentWindow();
-          const size = await win.outerSize();
-          const pos = await win.outerPosition();
-          await invoke('save_window_state', {
-            x: pos.x, y: pos.y, width: size.width, height: size.height
-          });
-        } catch (e) {}
-      }, 500);
-    }
+    // 取消排课：这里只是把请求发出去。真正停下来要等外壳终止引擎、
+    // run_scheduler 返回，界面的收尾统一在上面那个 finally 里做。
+    $('btn-cancel').onclick = async () => {
+      const b = $('btn-cancel');
+      b.disabled = true;
+      b.textContent = '正在取消…';
+      try {
+        await invoke('cancel_scheduler');
+      } catch (e) {
+        setStatus('error', '取消失败：' + e);
+      }
+    };
 
-    const mainWin = getCurrentWindow();
-    mainWin.onResized(scheduleSaveWindowState);
-    mainWin.onMoved(scheduleSaveWindowState);
+    $('btn-open-logs').onclick = () => {
+      invoke('open_logs_dir').catch(() => {});
+    };
+
+    // 键盘：Ctrl+Enter 开始排课；Esc 关掉新手教程（它是模态，挡着什么都点不了）。
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('tutorial-overlay').classList.contains('hidden')) {
+        finishTutorial();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (!$('btn-run').disabled) $('btn-run').click();
+      }
+    });
+
+    // 窗口大小/位置记忆已经移到 Rust 侧（监听窗口事件直接写配置）。
+    // 原先这里用 getCurrentWindow().outerSize()，那是 core 的 window API，
+    // 而本项目没有 capabilities 配置 → 调用被 ACL 静默拒绝，
+    // config.json 里的 window_state 一直是 null：这个功能从来没生效过。
 
     // textarea 输入时实时保存特殊要求
     $('requirements').addEventListener('input', () => {
@@ -503,7 +739,7 @@
       {
         icon: '👋',
         title: '欢迎使用排课助手',
-        desc: '我是你的排课小帮手！上传教师、班级和课时标准数据，告诉我你的特殊要求，我就能在几十秒内排出 3-8 套合理课表供你挑选。全程离线运行，数据不会上传。'
+        desc: '我是你的排课小帮手！上传教师、班级和课时标准数据，告诉我你的特殊要求，我就能排出多套可对比的课表供你挑选（25 个班大约 3 分钟）。全程离线运行，数据不会上传。'
       },
       {
         icon: '📊',
@@ -513,7 +749,7 @@
       {
         icon: '📝',
         title: '第二步：填写特殊要求（可选）',
-        desc: '如果有老师请假、班级活动、固定课时等特殊情况，写在这里就行。比如「张三老师周二下午有会」「周五下午留出社团时间」。内容会自动保存，下次打开还在。没有特殊要求就留空。'
+        desc: '简单的要求写「T30教C05英语」这种指定任课；更复杂的（某老师某天没空、某班某节不排课、某老师最多带几个班等）在下面的「书写规范」里复制一段结构化写法整段粘进来即可。内容会自动保存，下次打开还在；没有特殊要求就留空。'
       },
       {
         icon: '📁',

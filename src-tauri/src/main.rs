@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
@@ -327,46 +328,95 @@ struct ValidateResult {
 }
 
 #[tauri::command]
-fn validate_input(path: String) -> ValidateResult {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let script = Path::new(manifest_dir).join("../engine/validate_input.py");
-    // ⚠️ 必须显式指定 UTF-8 输出。
-    // 外壳是 GUI 程序、没有控制台；Python 在管道下会退回系统的 ANSI 代码页
-    // （简体中文 Windows = cp936/GBK）输出，而 Rust 这边按 UTF-8 解码，
-    // 中文就全成了乱码（「格式：新格式（课时标准）」显示成方块问号）。
-    let output = Command::new("python")
+fn validate_input(app: tauri::AppHandle, path: String) -> ValidateResult {
+    let failed = |msg: String| ValidateResult {
+        valid: false,
+        errors: vec![msg],
+        warnings: vec![],
+        stats: std::collections::HashMap::new(),
+    };
+
+    // 以前这里写死「用系统 `python` 跑 manifest_dir/../engine/validate_input.py」：
+    // 那个路径来自**编译期**的 CARGO_MANIFEST_DIR，装到用户机器上并不存在；
+    // 而且用户机器也没有 Python。结果是预检在开发版能跑、装完就必然失败
+    // （连带「用 AI 转」也拿不到姓名映射 —— 它依赖这里的 stats）。
+    //
+    // 现在改成调用引擎自带的 `--validate` 子命令：与排课共用同一套引擎定位逻辑，
+    // 开发版 / 安装版走同一条路径；引擎 exe 里已经打包了 openpyxl，
+    // 用户机器无需安装 Python。
+    let (program, mut args) = match build_engine_command(&app) {
+        Ok(v) => v,
+        Err(e) => return failed(format!("无法定位输入校验程序: {}", e)),
+    };
+    args.push("--validate".to_string());
+    args.push(path);
+
+    // ⚠️ 保留 UTF-8 环境变量：开发版走的是 `python engine.py`，管道下 python 会
+    // 退回系统 ANSI 代码页（cp936/GBK），而这里按 UTF-8 解码 → 中文变乱码。
+    // 安装版是打包 exe，它自己在代码里改了流编码，不依赖这两个变量。
+    let output = Command::new(&program)
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
-        .arg(&script)
-        .arg(&path)
+        .args(&args)
         .output();
+
     match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
             match serde_json::from_str::<ValidateResult>(&stdout) {
                 Ok(r) => r,
-                Err(_) => ValidateResult {
-                    valid: false,
-                    errors: vec![format!("校验脚本输出解析失败: {}", stdout.lines().last().unwrap_or(""))],
-                    warnings: vec![],
-                    stats: std::collections::HashMap::new(),
-                },
+                Err(_) => failed(format!(
+                    "校验程序输出解析失败: {}",
+                    stdout.lines().last().unwrap_or("")
+                )),
             }
         }
-        Err(e) => ValidateResult {
-            valid: false,
-            errors: vec![format!("无法运行校验脚本: {}", e)],
-            warnings: vec![],
-            stats: std::collections::HashMap::new(),
-        },
+        Err(e) => failed(format!("无法运行校验程序: {}", e)),
     }
 }
 
-#[tauri::command]
-fn save_window_state(x: i32, y: i32, width: u32, height: u32) -> Result<(), String> {
+/// 把当前窗口的位置与大小写进配置。
+///
+/// 原先这段在前端做（`getCurrentWindow().outerSize()`）——那是 core 的 window API，
+/// 而本项目**没有 capabilities 配置**，调用会被 ACL 静默拒绝：
+/// `config.json` 里的 `window_state` 一直是 `null`，窗口记忆从来没生效过。
+/// 改成在 Rust 侧监听事件 + 查询，不经过 ACL。
+fn save_window_state_from(win: &tauri::WebviewWindow) {
+    if win.is_minimized().unwrap_or(false) {
+        return; // 最小化时尺寸会变成一个很小的值，存进去下次就真恢复成小窗口
+    }
+    let Ok(size) = win.outer_size() else { return };
+    let Ok(pos) = win.outer_position() else { return };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let size = size.to_logical::<u32>(scale);
+    let pos = pos.to_logical::<i32>(scale);
+    // 窗口被隐藏/最小化时 Windows 会给一个很离谱的负坐标，一并挡掉
+    if size.width < 400 || size.height < 320 || pos.x < -10000 || pos.y < -10000 {
+        return;
+    }
     let mut cfg = load_config();
-    cfg.window_state = Some(WindowState { x, y, width, height });
-    save_config(&cfg)
+    cfg.window_state = Some(WindowState {
+        x: pos.x,
+        y: pos.y,
+        width: size.width,
+        height: size.height,
+    });
+    let _ = save_config(&cfg);
+}
+
+/// 拖动窗口时 Resized/Moved 每帧都会触发，这里限制最小写入间隔，别把磁盘写爆。
+fn should_save_window_state() -> bool {
+    static LAST: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    let slot = LAST.get_or_init(|| Mutex::new(None));
+    let Ok(mut g) = slot.lock() else { return false };
+    let now = Instant::now();
+    if let Some(t) = *g {
+        if now.duration_since(t) < Duration::from_millis(800) {
+            return false;
+        }
+    }
+    *g = Some(now);
+    true
 }
 
 fn load_config() -> Config {
@@ -585,6 +635,93 @@ fn set_progress(p: Option<ProgressPayload>) {
 #[tauri::command]
 fn get_progress() -> Option<ProgressPayload> {
     progress_slot().lock().ok().and_then(|s| s.clone())
+}
+
+// ==================== 取消排课 ====================
+//
+// 用户实测提的：排一次约 3 分钟，中途想放弃只能关窗口（而关闭默认收进托盘，
+// 进程还占着）。这里给一条"能停下来"的路。
+//
+// 两个必须踩对的地方：
+//   ① 引擎是 PyInstaller onefile。Windows 上它是「bootloader 父进程 + 真正跑
+//      Python 的子进程」两个进程；只杀父进程会留下子进程继续算，所以必须
+//      taskkill /T 杀整棵树。
+//   ② 被强杀的进程没法执行自己的清理代码，%TEMP% 下的 _MEIxxxxxx 解包目录
+//      会留下来（约 105 MB）。外壳负责兜底清理（见 cleanup_mei_leftovers）。
+
+/// 当前正在运行的引擎进程 PID（供 `cancel_scheduler` 使用）。
+fn running_pid_slot() -> &'static Mutex<Option<u32>> {
+    static SLOT: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// 本轮排课是否已被用户取消。run_scheduler 据此把结果报成"已取消"而不是"失败"。
+fn cancelled_flag() -> &'static AtomicBool {
+    static FLAG: AtomicBool = AtomicBool::new(false);
+    &FLAG
+}
+
+/// 取消正在进行的排课。返回 false 表示当前没有在跑的任务。
+#[tauri::command(async)]
+fn cancel_scheduler() -> Result<bool, String> {
+    let pid = match running_pid_slot().lock().ok().and_then(|g| *g) {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+    cancelled_flag().store(true, Ordering::SeqCst);
+    app_log(&format!("用户取消排课：终止引擎进程树 PID={}", pid));
+    match Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output()
+    {
+        Ok(o) => app_log(&format!("taskkill 已执行，退出码={:?}", o.status.code())),
+        Err(e) => app_log(&format!("taskkill 调用失败（由轮询循环兜底 kill）: {}", e)),
+    }
+    Ok(true)
+}
+
+/// 清理 PyInstaller onefile 留下的解包目录（被强杀时它自己来不及清）。
+///
+/// 只删 %TEMP% 下**名字以 `_MEI` 开头、且修改时间不早于 `since`** 的目录：
+/// 时间窗是为了不误伤其它正在运行的 PyInstaller 程序；再加一个数量上限，
+/// 异常情况下宁可留一点也不乱删。
+fn cleanup_mei_leftovers(since: SystemTime) {
+    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let mut removed = 0usize;
+    for e in entries.flatten() {
+        if removed >= 5 {
+            break;
+        }
+        if !e.file_name().to_string_lossy().starts_with("_MEI") {
+            continue;
+        }
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let fresh = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t >= since)
+            .unwrap_or(false);
+        if fresh && fs::remove_dir_all(&path).is_ok() {
+            removed += 1;
+            app_log(&format!("已清理引擎解包残留: {}", path.display()));
+        }
+    }
+}
+
+/// 打开日志目录。失败时用户能自己去翻引擎日志（`<任务ID>.engine.log`），
+/// 而不是只能看着一句"排课失败"干着急。
+#[tauri::command]
+fn open_logs_dir() -> Result<(), String> {
+    Command::new("explorer")
+        .arg(log_dir())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// 取字符串开头的连续数字（引擎日志里的「阶段3/5」「方案 2/3」都靠它）。
@@ -838,9 +975,16 @@ fn run_scheduler(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    // 本轮开始时清掉上一轮的取消标记；引擎起来后把 PID 登记出去，
+    // 前端点「取消排课」时 cancel_scheduler 才找得到它。
+    cancelled_flag().store(false, Ordering::SeqCst);
     let start_time = Instant::now();
+    let started_sys = SystemTime::now();   // 清理 _MEI 残留时的时间基准
     let mut child = cmd.spawn().map_err(|e| format!("启动排课引擎失败: {}", e))?;
     let pid = child.id();
+    if let Ok(mut g) = running_pid_slot().lock() {
+        *g = Some(pid);
+    }
     app_log(&format!("引擎已启动, PID={}", pid));
 
     // 问题3（2026-10-01）：以前是等子进程退出后才 read_to_end，排课的几分钟里
@@ -887,6 +1031,14 @@ fn run_scheduler(
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => break Some(status),
             None => {
+                // 用户点了「取消排课」：cancel_scheduler 已经 taskkill 过整棵树，
+                // 这里再补一刀（taskkill 失败时兜底），然后按"取消"收尾。
+                if cancelled_flag().load(Ordering::SeqCst) {
+                    app_log("检测到取消请求，终止引擎");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
                 if Instant::now() >= deadline {
                     app_log("引擎超时（10分钟），强制终止");
                     let _ = child.kill();
@@ -905,8 +1057,16 @@ fn run_scheduler(
         }
     };
 
+    // 进程已退出，先把 PID 摘掉：此后前端再点「取消排课」会得到"没有正在进行的任务"。
+    if let Ok(mut g) = running_pid_slot().lock() {
+        *g = None;
+    }
+    let cancelled = cancelled_flag().load(Ordering::SeqCst);
     let elapsed = start_time.elapsed().as_secs_f64();
-    app_log(&format!("引擎退出, 耗时{:.1}秒, 超时={}", elapsed, timed_out));
+    app_log(&format!(
+        "引擎退出, 耗时{:.1}秒, 超时={}, 已取消={}",
+        elapsed, timed_out, cancelled
+    ));
     // 引擎已退出，剩下来的都是外壳自己的收尾工作
     set_progress(Some(ProgressPayload {
         stage: 5,
@@ -932,7 +1092,23 @@ fn run_scheduler(
         app_log(&format!("=== 引擎stderr ===\n{}", String::from_utf8_lossy(&stderr)));
     }
 
+    if cancelled {
+        // 用户主动取消：不算失败，也不必保留引擎日志（那是留给异常排查用的）。
+        cleanup_mei_leftovers(started_sys);
+        let _ = fs::remove_dir_all(&work_dir);
+        return Ok(SchedulerResult {
+            code: 2,
+            message: "已取消排课。可以修改条件后重新开始。".to_string(),
+            warnings: vec![],
+            plans: vec![],
+            output_xlsx: None,
+            output_pdf: None,
+        });
+    }
+
     if timed_out {
+        // 超时同样是强杀，也会留下 _MEI 解包目录
+        cleanup_mei_leftovers(started_sys);
         preserve_engine_log(&out_dir, &task_id);
         let _ = fs::remove_dir_all(&work_dir);
         return Ok(SchedulerResult {
@@ -1114,17 +1290,24 @@ fn main() {
                 })
                 .build(app)?;
 
-            // ---- 主窗口关闭拦截 ----
+            // ---- 主窗口：关闭拦截 + 尺寸/位置记忆 ----
             if let Some(main) = app.get_webview_window("main") {
-                let main_for_event = main.clone();
-                main.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
+                let win = main.clone();
+                main.on_window_event(move |event| match event {
+                    WindowEvent::CloseRequested { api, .. } => {
                         let cfg = load_config();
                         if cfg.close_to_tray {
                             api.prevent_close();
-                            let _ = main_for_event.hide();
+                            let _ = win.hide();
                         }
                     }
+                    // 位置和尺寸都记：只拖动、或只拉边框，都要能记住。
+                    WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
+                        if should_save_window_state() {
+                            save_window_state_from(&win);
+                        }
+                    }
+                    _ => {}
                 });
             }
 
@@ -1154,9 +1337,10 @@ fn main() {
             show_tutorial,
             download_template,
             get_file_info,
-            save_window_state,
             validate_input,
-            get_progress
+            get_progress,
+            cancel_scheduler,
+            open_logs_dir
         ])
         .run(tauri::generate_context!())
         .expect("排课助手启动失败");

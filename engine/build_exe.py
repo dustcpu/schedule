@@ -42,6 +42,11 @@ def main() -> int:
         "--collect-submodules", "scheduler",
         # 关键：补齐 ortools/.libs 下的原生 DLL，缺了 exe 跑不起来
         "--collect-all", "ortools",
+        # ⚠️ 必须显式声明：engine.py 只在 _run_validate() 的函数体里 import 它，
+        #    PyInstaller 的静态分析未必收得到。漏了它，外壳调用 `engine --validate`
+        #    时会在安装版报 ModuleNotFoundError，而开发版（直接跑 .py）照样正常，
+        #    属于典型的"只有打包后才暴露"的坑。
+        "--hidden-import", "validate_input",
         "engine.py",
     ]
     print("[build_exe] 工作目录:", HERE)
