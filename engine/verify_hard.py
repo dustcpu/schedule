@@ -92,6 +92,24 @@ def check_plan(problem, plan) -> list:
             errs.append(f"H25 跨学科任课: {t}（任教{problem.teachers[t].subject}）"
                         f" 教 {c.class_id} 的{c.subject}")
 
+    # H29 班主任须在本班至少任课 1 节（设置页开关，默认关）
+    if getattr(cfg, "homeroom_must_teach_own", False):
+        for ci in problem.classes:
+            tid = (getattr(ci, "homeroom", "") or "").strip()
+            if not tid or not problem.teachers.get(tid):
+                continue
+            subj_of_t = problem.teachers[tid].subject
+            # 本班若没有他任教的学科（未开课/周课时0），这条要求不适用，
+            # 加载层已告警；这里跳过，避免把"不适用"误判成"没做到"。
+            if not any(c.class_id == ci.id and c.subject == subj_of_t
+                       and c.subject not in NO_TEACHER_SUBJECTS
+                       for c in problem.courses):
+                continue
+            if not any(assign.get((ci.id, c.subject)) == tid
+                       and c.class_id == ci.id for c in problem.courses):
+                errs.append(f"H29 班主任没教自己带的班: {ci.id} 班主任 {tid}"
+                            f"（任教{subj_of_t}）")
+
     # H4 固定课
     for fc in cfg.fixed_classes:
         if not (1 <= fc.day <= NUM_DAYS) or fc.period not in periods:

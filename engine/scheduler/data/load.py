@@ -70,6 +70,9 @@ class ClassInfo:
     name: str = ""
     grade: str = ""
     elective: str = ""   # 选科组合（如 物化生），决定哪些学科按「选考周课时」计
+    # 「班级」sheet 的「班主任」列（教师ID）。2026-10-05 之前这一列**没被读取**，
+    # 设置页的「班主任须在本班任课」开关要靠它。可能为空（没填）或写的是姓名。
+    homeroom: str = ""
 
 
 @dataclass
@@ -255,6 +258,9 @@ def _load_classes(ws):
             name=_cell_str(r.get("班级名称") or r.get("班级")),
             grade=_cell_str(r.get("年级")),
             elective=_cell_str(r.get("选科")),
+            # 班主任列可能写 ID 也可能写姓名（教师表此时还没读，先原样存，
+            # 留到 apply_homeroom_own_class 里用 _resolve_id 做容错解析）。
+            homeroom=_cell_str(r.get("班主任")),
         ))
     if not out:
         raise DataError("「班级」sheet 未解析到有效行（缺少「班级ID」列？）")
@@ -749,6 +755,66 @@ def apply_structured_double_bans(courses, structured, teachers, cfg, warnings,
                 f"已将其移出 {len(removed)} 门课程的候选：{show}")
 
 
+def apply_homeroom_own_class(courses, classes, teachers, cfg, warnings):
+    """H29 班主任须在本班任课：把班主任补进「本班 + 他任教学科」那门课的候选集。
+
+    由设置页「班主任必须在自己担任班主任的班上任课」开关控制（cfg.homeroom_must_teach_own），
+    **默认关**，关着时行为与旧版完全一致。
+
+    这里只负责"让 y 变量存在"——"至少 1 节"由建模层写 sum(y[...]) >= 1。
+    班主任若不在候选集里，模型里就没有对应的 0/1 变量，那条约束无从表达。
+
+    顺带把 ClassInfo.homeroom 归一成教师ID（表里那列可能写的是姓名），
+    供建模层与 verify_hard 直接使用；解析不了的置空（上面已给出具体原因）。
+    """
+    if not getattr(cfg, "homeroom_must_teach_own", False):
+        return
+    by_key = {(c.class_id, c.subject): c for c in courses}
+    added = 0
+    no_teacher, no_subject, no_course, locked = [], [], [], []
+    for ci in classes:
+        raw = (getattr(ci, "homeroom", "") or "").strip()
+        if not raw:
+            continue
+        tid = raw if raw in teachers else _resolve_id(raw, list(teachers))
+        if not tid:                       # 表里那列写的是姓名的情况
+            tid = next((t.id for t in teachers.values() if t.name == raw), None)
+        ci.homeroom = tid or ""           # 归一；解析不了就置空，避免下游重复告警
+        if not tid:
+            no_teacher.append(f"{ci.id}（{raw}）")
+            continue
+        subj = (teachers[tid].subject or "").strip()
+        if not subj:
+            no_subject.append(f"{ci.id}（{tid} 未填任教学科）")
+            continue
+        c = by_key.get((ci.id, subj))
+        if c is None or subj in NO_TEACHER_SUBJECTS:
+            no_course.append(f"{ci.id} 的「{subj}」")
+            continue
+        if getattr(c, "locked", False):
+            # 该课已被「特殊要求」显式指定给别人 —— 用户意图优先，不覆盖
+            if c.teacher_id != tid:
+                locked.append(f"{ci.id}（{subj}已指定给 {c.teacher_id}）")
+            continue
+        cands = list(c.teacher_candidates or [])
+        if tid not in cands:
+            cands.append(tid)
+            c.teacher_candidates = cands
+            added += 1
+    if added:
+        warnings.append(
+            f"班主任必须教自己带的班：已把 {added} 位班主任补进其本班课程的候选")
+    for items, why in (
+        (no_teacher, "「班主任」在教师表里找不到"),
+        (no_subject, "班主任没有任教学科"),
+        (no_course, "班主任所任教的学科在其本班没有课时"),
+        (locked, "对应课程已被显式指定给别的教师"),
+    ):
+        if items:
+            show = "、".join(items[:5]) + ("…" if len(items) > 5 else "")
+            warnings.append(f"「班主任必须教自己带的班」对以下班级无法生效（{why}）：{show}")
+
+
 def _pick_candidates(subj, teachers_by_subject, teacher_load, k: int) -> List[str]:
     """按 (当前负载, 教师ID) 升序取前 k 位同学科教师。
 
@@ -1037,6 +1103,10 @@ def load_problem(in_dir):
         if skipped:
             show = "、".join(skipped[:5]) + ("…" if len(skipped) > 5 else "")
             warnings_list.append(f"以下教师指定在课程表中找不到对应条目，已忽略：{show}")
+
+    # H29 班主任须在本班任课（设置页开关，默认关）。
+    # 必须放在"教师指定"之后：被显式指定给别人的课不能覆盖，这里只补候选。
+    apply_homeroom_own_class(courses, classes, teachers, cfg, warnings_list)
 
     # 结构化约束·教师连堂禁日：见 apply_structured_double_bans（独立成函数，
     # 供手工构造 Problem 的测试复用同一条收缩逻辑）。

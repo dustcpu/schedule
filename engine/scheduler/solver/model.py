@@ -212,6 +212,35 @@ def build_model(p: Problem) -> ModelBundle:
             n_t = model.NewIntVar(lo, upper, f"n_{t}")
             model.Add(n_t == sum(y[(cid, ss, t)] for (cid, ss) in pairs))
 
+    # ---------- H29 班主任须在本班至少任课 1 节（设置页开关）----------
+    # 只有当"教师分配纳入求解"（存在 y）时才表达得了；候选的补充在
+    # load.apply_homeroom_own_class 里做（那把班主任补进本班课程候选）。
+    if getattr(cfg, "homeroom_must_teach_own", False):
+        if not cand_of:
+            warnings.append(
+                "已勾选「班主任须在自己班上任课」，但本次排课未启用教师分配决策，本条未生效")
+        else:
+            covered, uncovered = 0, 0
+            for ci in p.classes:
+                tid = (getattr(ci, "homeroom", "") or "").strip()
+                if not tid:
+                    continue
+                vs = [y[(ci.id, s, tid)] for s in subjects_by_class.get(ci.id, [])
+                      if (ci.id, s, tid) in y]
+                if not vs:
+                    uncovered += 1        # 原因已在加载层逐类告警，这里只报个数
+                    continue
+                model.Add(sum(vs) >= 1)
+                covered += 1
+            if covered:
+                warnings.append(
+                    f"班主任必须教自己带的班：已生效 —— {covered} 个班的班主任都排到了"
+                    f"本班的正式课（班会的固定课不计）")
+            if uncovered:
+                warnings.append(
+                    f"班主任必须教自己带的班：另有 {uncovered} 个班没能覆盖"
+                    f"（原因见上面的告警）")
+
     # 回退路径：无候选（如全部显式指派、或未启用教师决策）时保留常量分组
     by_teacher: Dict[str, List[Tuple[str, str]]] = {}
     if not cand_of:

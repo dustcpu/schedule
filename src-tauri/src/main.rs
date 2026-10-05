@@ -161,6 +161,11 @@ struct ClassRule {
     science_start: i32,
     science_end: i32,
     gaokao_policy: String,
+    /// 班主任必须在自己担任班主任的那个班上至少任课 1 节（设置页开关，默认关）。
+    /// ⚠️ 必须 serde(default)：老用户的 config.json 里没有这个字段，
+    /// 少了它整个配置会反序列化失败、退回默认值，把用户设置全冲掉。
+    #[serde(default)]
+    homeroom_must_teach_own: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -223,6 +228,7 @@ impl Default for Config {
                     science_start: 5,
                     science_end: 25,
                     gaokao_policy: "新高考3+1+2".to_string(),
+                    homeroom_must_teach_own: false,
                 },
                 consecutive: ConsecutiveRule {
                     subjects: vec!["语文".to_string(), "数学".to_string(), "英语".to_string()],

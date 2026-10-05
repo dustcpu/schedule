@@ -312,6 +312,9 @@ class Config:
     soft: SoftWeights = field(default_factory=SoftWeights)
     solver: SolverConfig = field(default_factory=SolverConfig)
     days: List[str] = field(default_factory=lambda: list(DAYS))
+    # 设置页「班级设置」的开关：班主任必须在自己担任班主任的那个班上至少任课 1 节。
+    # 默认关（不设这个开关时行为与旧版完全一致）。
+    homeroom_must_teach_own: bool = False
 
     def periods(self) -> List[int]:
         return list(range(1, self.schedule.periods_per_day + 1))
@@ -344,4 +347,9 @@ def load_from_hard_limits(hl: Dict[str, Any]) -> Config:
     base.consecutive = consecutive_from_dict(hl.get("consecutive", {}), ConsecutiveRule())
     base.soft = SoftWeights.from_dict(hl.get("soft_weights", {}), SoftWeights())
     base.solver = SolverConfig.from_dict(hl.get("solver", {}), SolverConfig())
+    # 「班级设置」里的开关（main.rs 的 ClassRule 原样写进 hard_limits.json）
+    classes_hl = hl.get("classes")
+    if isinstance(classes_hl, dict):
+        base.homeroom_must_teach_own = bool(
+            classes_hl.get("homeroom_must_teach_own", False))
     return base

@@ -404,7 +404,9 @@
     function renderHardLimitsSummary(hl) {
       const s = hl.schedule;
       const c = hl.consecutive;
-      const text = `当前生效：${s.periods_per_day}节/天，上午${s.morning_start}-${s.morning_end}，下午${s.afternoon_start}-${s.afternoon_end}；连堂：${DAY_NAMES[c.math_day]}数学、${DAY_NAMES[c.chinese_day]}语文、${DAY_NAMES[c.english_day]}英语`;
+      const home = hl.classes && hl.classes.homeroom_must_teach_own;
+      const text = `当前生效：${s.periods_per_day}节/天，上午${s.morning_start}-${s.morning_end}，下午${s.afternoon_start}-${s.afternoon_end}；连堂：${DAY_NAMES[c.math_day]}数学、${DAY_NAMES[c.chinese_day]}语文、${DAY_NAMES[c.english_day]}英语`
+        + (home ? '；班主任教自己班：开' : '');
       $('hl-text').textContent = text;
     }
 
