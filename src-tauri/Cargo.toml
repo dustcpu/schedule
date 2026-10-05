@@ -1,8 +1,8 @@
 [package]
 name = "paike-assistant"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
-description = "排课助手 v0.1.8"
+description = "排课助手 v0.1.9"
 
 [[bin]]
 name = "paike-assistant"
