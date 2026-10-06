@@ -16,18 +16,20 @@
 
 | 位置 | 当前值 | 说明 |
 |---|---|---|
-| `src-tauri/tauri.conf.json` | `0.1.9` | 安装包版本（外壳） |
-| `src-tauri/Cargo.toml` | `0.1.9` | Rust 包版本 |
-| `src-tauri/Cargo.lock` | `0.1.9` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
-| `README.md` | `v0.1.9` | 文档头部 |
-| `ui/settings.html` | `v0.1.9` | 设置页「关于」里显示的版本号 |
-| `engine/scheduler/__init__.py` | `0.1.9` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
+| `src-tauri/tauri.conf.json` | `0.1.10` | 安装包版本（外壳） |
+| `src-tauri/Cargo.toml` | `0.1.10` | Rust 包版本 |
+| `src-tauri/Cargo.lock` | `0.1.10` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
+| `README.md` | `v0.1.10` | 文档头部 |
+| `ui/settings.html` | `v0.1.10` | 设置页「关于」里显示的版本号 |
+| `engine/scheduler/__init__.py` | `0.1.10` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
 
 ---
 
 ## [未发布]
 
 > 下一次改动写在这里；发版时整段转成新的版本小节（带日期）。
+
+## [v0.1.10] - 2026-10-06
 
 ### 新增
 - **「检查更新」接上了**（此前是个点了没反应的死按钮：界面有按钮、却是全仓库唯一
