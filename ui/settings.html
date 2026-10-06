@@ -142,7 +142,7 @@
       <div class="about">
         <p><strong>排课助手</strong> <span id="app-version">v0.1.9</span></p>
         <p>作者：Dust.</p>
-        <p>本程序完全离线运行，不上传任何数据。</p>
+        <p>本程序平时不联网、不上传任何数据；只有你点「检查更新」时，才会向仓库查一次版本号。</p>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
           <button id="btn-check-update" class="ghost-btn">🔄 检查更新</button>
           <button id="btn-show-tutorial" class="ghost-btn">📖 重新查看新手教程</button>
@@ -157,6 +157,13 @@
   <script>
     const { invoke } = window.__TAURI__.core;
     const $ = id => document.getElementById(id);
+
+    // 被静默吞掉的失败也留个痕（同主面板）：设置页是"改完自动保存"，
+    // 保存失败却不出声的话，用户会以为改好了、下次排课才发现没生效。
+    function logErr(scope, e) {
+      const msg = (e && (e.message || e.toString())) || String(e);
+      invoke('log_frontend_error', { scope, message: msg }).catch(() => {});
+    }
 
     let cfg = {
       default_output_dir: null,
@@ -301,7 +308,12 @@
       cfg.close_to_tray = document.querySelector(
         'input[name="close-behavior"]:checked'
       ).value === 'tray';
-      await invoke('set_config', { config: cfg });
+      try {
+        await invoke('set_config', { config: cfg });
+      } catch (e) {
+        logErr('保存设置', e);
+        $('update-result').textContent = '设置没能保存：' + e + '（详情见日志文件夹）';
+      }
     }
 
     $('btn-pick-dir').onclick = async () => {
@@ -334,6 +346,35 @@
       cfg.hard_limits.fixed_classes.push({ day: 1, period: 1, subject: '', note: '' });
       renderFixedList();
       save();
+    };
+
+    // 「检查更新」：⚠️ 这是全程序唯一一处联网，且只在你点这个按钮时发生。
+    // 三种结果都由外壳给（已是最新 / 有新版本 / 没连上），这里只负责显示，不自己判断。
+    $('btn-check-update').onclick = async () => {
+      const btn = $('btn-check-update');
+      const box = $('update-result');
+      btn.disabled = true;
+      box.textContent = '正在检查…';
+      let r;
+      try {
+        r = await invoke('check_update');
+      } catch (e) {
+        box.textContent = '检查失败：' + e;
+        btn.disabled = false;
+        return;
+      }
+      btn.disabled = false;
+      box.innerHTML = '';
+      const line = document.createElement('div');
+      line.style.color = !r.ok ? '#666' : (r.has_update ? '#b45309' : '#15803d');
+      line.textContent = r.message;
+      box.appendChild(line);
+      const open = document.createElement('button');
+      open.className = 'ghost-btn';
+      open.style.marginTop = '6px';
+      open.textContent = r.has_update ? '前往下载最新版' : '打开仓库页面';
+      open.onclick = () => invoke('open_url', { url: r.url }).catch(e => logErr('打开仓库链接', e));
+      box.appendChild(open);
     };
 
     $('btn-show-tutorial').onclick = async () => {

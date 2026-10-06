@@ -195,6 +195,13 @@
 
     const $ = id => document.getElementById(id);
 
+    // 被静默吞掉的失败也留个痕：以前这些 catch 是空的，出了问题日志里一条都没有，
+    // 用户只说得出"点了没反应"。上报本身失败就算了，绝不再抛。
+    function logErr(scope, e) {
+      const msg = (e && (e.message || e.toString())) || String(e);
+      invoke('log_frontend_error', { scope, message: msg }).catch(() => {});
+    }
+
     // ---- 排课进度条（2026-10-01）----
     // ⚠️ 用「轮询 get_progress」而不是 Tauri 事件：本项目的 webview 没有配置
     //    capabilities（src-tauri/capabilities/ 不存在），Tauri 2 里事件 API 属于
@@ -375,6 +382,10 @@
     let inputPath = null;
     let outputDir = null;
     let currentConfig = null;
+    // 已经检查过的文件路径。预检要起一次引擎（105MB onefile，解包几秒），
+    // 而 refreshConfig 每次回主面板都会跑一次（开一次设置回来就跑一次），
+    // 同一个文件没必要反复查。用户显式重选文件时传 force=true 强制重查。
+    let lastValidatedPath = null;
 
     // 特殊要求自动保存到 localStorage，下次打开自动恢复
     // ⚠️ $ 必须已在上面声明：此前 $ 声明在本段之后，这里取 $ 会抛 ReferenceError，
@@ -432,7 +443,9 @@
     // 等样式，但前端一直没调用，这一块从来没显示过内容——
     // 用户只有点了「开始排课」、等上几分钟，才知道数据有问题。
     // 这里把它接上：选完文件立刻检查，把问题挡在排课之前。
-    async function validateSelectedFile(path) {
+    async function validateSelectedFile(path, force) {
+      if (!force && path === lastValidatedPath) return;   // 同一个文件不重复查
+      lastValidatedPath = path;
       const box = $('validation-result');
       box.style.display = 'block';
       box.innerHTML = '<div class="validate-loading">正在检查输入文件…</div>';
@@ -441,6 +454,7 @@
       try {
         r = await invoke('validate_input', { path });
       } catch (e) {
+        logErr('输入预检', e);
         box.innerHTML = '<div class="validate-errors">输入检查失败：' + e + '</div>';
         return;
       }
@@ -489,12 +503,12 @@
         inputPath = p;
         $('file-name').textContent = p;
         await showFileSize(p);
-        await validateSelectedFile(p);
+        await validateSelectedFile(p, true);   // 显式重选 → 强制重查
       }
     };
 
     $('btn-download-template').onclick = () => {
-      invoke('download_template').catch(() => {});
+      invoke('download_template').catch(e => logErr('下载输入模板', e));
     };
 
     $('btn-pick-dir').onclick = async () => {
@@ -502,9 +516,15 @@
       if (p) {
         outputDir = p;
         $('dir-name').textContent = p;
-        await invoke('set_config', {
-          config: { ...currentConfig, default_output_dir: outputDir }
-        });
+        try {
+          await invoke('set_config', {
+            config: { ...currentConfig, default_output_dir: outputDir }
+          });
+        } catch (e) {
+          // 保存失败要说出来：不然用户以为目录记住了，下次打开又变回去
+          logErr('保存输出目录', e);
+          setStatus('warn', '输出目录没能保存（详情见日志文件夹）');
+        }
       }
     };
 
@@ -674,6 +694,7 @@
         }
         renderResult(r);
       } catch (e) {
+        logErr('调用排课', e);
         setStatus('error', '调用失败：' + e);
       } finally {
         btn.disabled = false;
@@ -706,12 +727,13 @@
       try {
         await invoke('cancel_scheduler');
       } catch (e) {
+        logErr('取消排课', e);
         setStatus('error', '取消失败：' + e);
       }
     };
 
     $('btn-open-logs').onclick = () => {
-      invoke('open_logs_dir').catch(() => {});
+      invoke('open_logs_dir').catch(e => logErr('打开日志文件夹', e));
     };
 
     // 键盘：Ctrl+Enter 开始排课；Esc 关掉新手教程（它是模态，挡着什么都点不了）。
@@ -741,17 +763,17 @@
       {
         icon: '👋',
         title: '欢迎使用排课助手',
-        desc: '我是你的排课小帮手！上传教师、班级和课时标准数据，告诉我你的特殊要求，我就能排出多套可对比的课表供你挑选（25 个班大约 3 分钟）。全程离线运行，数据不会上传。'
+        desc: '我是你的排课小帮手！上传教师、班级和课时标准数据，告诉我你的特殊要求，我就能排出多套可对比的课表供你挑选（25 个班大约 3 分钟）。数据都只在你自己的电脑上处理，不会上传。'
       },
       {
         icon: '📊',
         title: '第一步：上传 Excel 数据',
-        desc: '点击「选择文件」，上传包含教师、班级、课时标准的 Excel 文件（任课安排可选）。不确定格式？页面最上方的蓝色卡片里写了详细要求，可以下载模板参考。'
+        desc: '点击「选择文件」，上传包含教师、班级、课时标准的 Excel 文件（任课安排可选）。选完文件会「立刻自动检查」，格式、缺列、周课时超额这些当场就告诉你，不用等排完才发现。不确定格式？最上方蓝色卡片里写了详细要求，可以下载模板参考。'
       },
       {
         icon: '📝',
-        title: '第二步：填写特殊要求（可选）',
-        desc: '简单的要求写「T30教C05英语」这种指定任课；更复杂的（某老师某天没空、某班某节不排课、某老师最多带几个班等）在下面的「书写规范」里复制一段结构化写法整段粘进来即可。内容会自动保存，下次打开还在；没有特殊要求就留空。'
+        title: '第二步：写特殊要求（可选）',
+        desc: '简单的要求直接写，比如「T30教C05英语」。复杂一点的（某老师某天没空、某班某节不排课、某老师最多带几个班）不用自己琢磨语法——点下面的「不会写？用 AI 帮你转」，它会把你写的话整理成一段提示词（里面的姓名会自动换成编号，真实姓名不外发），你拿这段提示词去问任意 AI，再把回给你的内容整段粘回来就行。内容会自动保存，下次打开还在；没有特殊要求就留空。'
       },
       {
         icon: '📁',
@@ -761,7 +783,12 @@
       {
         icon: '🚀',
         title: '最后一步：开始排课',
-        desc: '点击蓝色的「开始排课」按钮，喝杯水的功夫就好了！完成后会显示多套方案和评分，点击方案可以展开查看详细指标，挑最满意的一套用。以后想再看教程？随时去「设置」→「关于」里点「重新查看新手教程」。'
+        desc: '点击蓝色的「开始排课」，大约 3 分钟出 3 套方案。点开方案卡片能看评分和各项明细，挑最满意的一套用。中途想改主意，点「取消排课」就能停下；万一没排出来，结果里会有「打开日志文件夹」，里面有本次的日志，方便查原因。'
+      },
+      {
+        icon: '⚙️',
+        title: '顺带一提：几个常用开关',
+        desc: '在「设置 → 硬限制预设条件」里可以改每天几节课、上午下午的作息、连堂安排、固定课（班会 / 研究性学习 / 校本课）。如果学校要求「班主任必须教自己带的班」，在那一页的「班级设置」里勾一下就行。改完下次排课生效。以后想再看这份教程，去「设置」→「关于」里点「重新查看新手教程」。'
       }
     ];
 

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,7 +40,20 @@ fn app_log(msg: &str) {
             use std::io::Write;
             f.write_all(line.as_bytes())
         });
-    println!("{}", line.trim());
+    // ⚠️ 这里**不能**用 println!：外壳是 GUI 程序、没有控制台，stdout 可能是无效句柄
+    // 或一条已被调用方关闭的管道，而 println! 写失败会 **panic** —— 日志没写成事小，
+    // 把整个应用（或排课的异步任务）带崩事大。写不到就算了。
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(line.as_bytes());
+}
+
+/// 前端把"被静默吞掉"的失败上报到这里。
+///
+/// 起因：前端多处 `.catch(() => {})`，出了问题日志里一条痕迹都没有
+/// （下载模板失败、打开日志目录失败、保存设置失败……用户只会觉得"点了没反应"）。
+#[tauri::command]
+fn log_frontend_error(scope: String, message: String) {
+    app_log(&format!("[前端] {} 失败: {}", scope, message));
 }
 
 /// 把引擎日志另存一份到 %APPDATA%\排课助手\logs\。
@@ -333,8 +347,38 @@ struct ValidateResult {
     stats: std::collections::HashMap<String, serde_json::Value>,
 }
 
-#[tauri::command]
+// ⚠️ `validate_input` 必须是 (async)！它要 `.output()` **阻塞等待**引擎 exe 退出，
+// 而引擎是 105MB 的 PyInstaller onefile —— 每次调用都要解包一遍，实机约 2~5 秒。
+// 不加 (async) 就跑在主线程上，把这 2~5 秒的 WebView 消息循环占死 →
+// 表现就是「刚打开就卡死 / 未响应」（2026-10-06 用户实测反馈）。
+// 而前端在**每次回主面板**时都会触发一次预检（refreshConfig），所以特别明显。
+//
+// 真正的活儿在 `validate_input_inner`；这一层只负责加日志 ——
+// 预检过去在日志里**一条记录都没有**，"选完文件就不对劲"这类问题根本无从查起。
+#[tauri::command(async)]
 fn validate_input(app: tauri::AppHandle, path: String) -> ValidateResult {
+    let started = Instant::now();
+    app_log(&format!("[预检] 开始: {}", path));
+    let r = validate_input_inner(app, path);
+    app_log(&format!(
+        "[预检] 结束: 耗时 {:.1}s, 有效={}, 错误 {} 条, 警告 {} 条",
+        started.elapsed().as_secs_f64(), r.valid, r.errors.len(), r.warnings.len()
+    ));
+    for e in r.errors.iter().take(3) {
+        app_log(&format!("[预检]   错误: {}", e));
+    }
+    let num = |k: &str| {
+        r.stats.get(k).and_then(|v| v.as_u64())
+            .map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+    };
+    app_log(&format!(
+        "[预检]   教师 {} / 班级 {} / 学科 {}",
+        num("teachers"), num("classes"), num("subjects")
+    ));
+    r
+}
+
+fn validate_input_inner(app: tauri::AppHandle, path: String) -> ValidateResult {
     let failed = |msg: String| ValidateResult {
         valid: false,
         errors: vec![msg],
@@ -364,6 +408,9 @@ fn validate_input(app: tauri::AppHandle, path: String) -> ValidateResult {
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
         .args(&args)
+        // 开发版退化成 `python engine.py` 时，python 是控制台程序，
+        // 从 GUI 父进程启动会**闪一下黑框**；引擎 exe 走这条也一并挡掉。
+        .creation_flags(0x0800_0000)
         .output();
 
     match output {
@@ -498,7 +545,13 @@ fn build_engine_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>),
     };
 
     for py in ["python", "py"] {
-        if Command::new(py).arg("--version").output().is_ok() {
+        // 只做探测；不挡控制台的话，每探测一次就闪一下黑框
+        if Command::new(py)
+            .arg("--version")
+            .creation_flags(0x0800_0000)
+            .output()
+            .is_ok()
+        {
             return Ok((
                 py.to_string(),
                 vec![script.to_string_lossy().to_string()],
@@ -545,6 +598,162 @@ fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 用系统默认浏览器打开一个网址（「检查更新」里点"前往下载"用）。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    // 不用 explorer：它把 URL 当路径处理的边界情况比较多，`start` 更确定。
+    // CREATE_NO_WINDOW 是为了不闪一下黑框 —— 外壳是 GUI 程序，子进程会各自开控制台。
+    Command::new("cmd")
+        .args(["/c", "start", "", &url])
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ==================== 检查更新 ====================
+//
+// ⚠️ 这是全程序**唯一**一处联网，而且只在用户点「检查更新」时发生：
+// 取仓库里最新的 vX.Y.Z 版本号跟本程序比一下，然后立刻结束。平时不联网、
+// 不上传任何数据（离线是给学校用的卖点，别让它偷偷联网）。
+//
+// 数据来源两条、互为兜底：
+//   ① GitHub API（JSON，好解析；要求 User-Agent，有速率限制）
+//   ② releases.atom（XML，不需 token；API 被限流/挡掉时用它）
+// 两条都拿不到 → 不报错，退回"没连上"的提示并给出仓库地址。
+
+const RELEASES_URL: &str = "https://github.com/dustcpu/schedule/releases";
+const API_RELEASES: &str = "https://api.github.com/repos/dustcpu/schedule/releases";
+const ATOM_RELEASES: &str = "https://github.com/dustcpu/schedule/releases.atom";
+
+#[derive(Serialize)]
+struct UpdateCheck {
+    /// 是否成功拿到远端版本号（false = 网络不通 / 仓库不可达）
+    ok: bool,
+    current: String,
+    latest: Option<String>,
+    has_update: bool,
+    /// 有新版本时指向那一版，否则指向 releases 列表
+    url: String,
+    message: String,
+}
+
+/// 只认 `vX.Y.Z` 形式的 tag。
+/// 引擎那条线的 tag 是 `engine-vX.Y.Z`，会被这里自然排除掉（数字解析不出来）。
+fn parse_tag_ver(tag: &str) -> Option<(u32, u32, u32)> {
+    let t = tag.trim().trim_start_matches('v');
+    let mut it = t.split('.');
+    let a = it.next()?.parse::<u32>().ok()?;
+    let b = it.next()?.parse::<u32>().ok()?;
+    let c = it.next()?.parse::<u32>().ok()?;
+    if it.next().is_some() {
+        return None;      // v0.1.9-rc1 这类不参与比较
+    }
+    Some((a, b, c))
+}
+
+/// 用 Windows 自带的 curl.exe 取一个 URL（避免给项目加 HTTP 依赖）。
+/// 任何失败都返回 None —— 调用方据此退回离线提示，不弹错。
+fn curl_get(url: &str) -> Option<String> {
+    let curl = std::env::var("SystemRoot")
+        .map(|r| format!("{}\\System32\\curl.exe", r))
+        .unwrap_or_else(|_| "curl.exe".to_string());
+    let out = Command::new(curl)
+        .args(["-sS", "-L", "--max-time", "8",
+               "-H", "Accept: application/vnd.github+json",
+               "-H", "User-Agent: paike-assistant"])
+        .arg(url)
+        .creation_flags(0x0800_0000)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    if s.trim().is_empty() { None } else { Some(s) }
+}
+
+#[derive(Deserialize)]
+struct GhRelease {
+    tag_name: String,
+    #[serde(default)]
+    html_url: Option<String>,
+}
+
+/// 从 GitHub API 的 releases 列表里挑出最高的 vX.Y.Z。
+fn latest_from_api() -> Option<((u32, u32, u32), String, String)> {
+    let body = curl_get(&format!("{}?per_page=50", API_RELEASES))?;
+    let list: Vec<GhRelease> = serde_json::from_str(&body).ok()?;
+    let mut best: Option<((u32, u32, u32), String, String)> = None;
+    for r in list {
+        let Some(v) = parse_tag_ver(&r.tag_name) else { continue };
+        if best.as_ref().map_or(true, |b| v > b.0) {
+            let url = r.html_url.unwrap_or_else(|| RELEASES_URL.to_string());
+            best = Some((v, r.tag_name, url));
+        }
+    }
+    best
+}
+
+/// API 拿不到时的兜底：从 releases.atom 里扫 `releases/tag/vX.Y.Z`。
+fn latest_from_atom() -> Option<((u32, u32, u32), String)> {
+    let body = curl_get(ATOM_RELEASES)?;
+    let mut best: Option<((u32, u32, u32), String)> = None;
+    for seg in body.split("releases/tag/").skip(1) {
+        let tag: String = seg
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+            .collect();
+        let Some(v) = parse_tag_ver(&tag) else { continue };
+        if best.as_ref().map_or(true, |b| v > b.0) {
+            best = Some((v, tag));
+        }
+    }
+    best
+}
+
+#[tauri::command(async)]
+fn check_update() -> UpdateCheck {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let cur_v = parse_tag_ver(&current).unwrap_or((0, 0, 0));
+
+    let found = latest_from_api().or_else(|| {
+        latest_from_atom().map(|(v, tag)| {
+            (v, tag.clone(), format!("{}/tag/{}", RELEASES_URL, tag))
+        })
+    });
+
+    match found {
+        Some((v, tag, url)) if v > cur_v => UpdateCheck {
+            message: format!("发现新版本 {}（当前 v{}）。可以前往仓库下载最新版。", tag, current),
+            latest: Some(tag.trim_start_matches('v').to_string()),
+            has_update: true,
+            url,
+            ok: true,
+            current,
+        },
+        Some(_) => UpdateCheck {
+            message: format!("当前已经是最新版本 v{}。", current),
+            latest: Some(current.clone()),
+            has_update: false,
+            url: RELEASES_URL.to_string(),
+            ok: true,
+            current,
+        },
+        None => UpdateCheck {
+            message: "没能连上仓库查版本（网络不通，或仓库暂时打不开）。\
+                      本程序平时不联网，只有你点这个按钮时才会查一次；\
+                      也可以自己前往仓库看看有没有新版。"
+                .to_string(),
+            latest: None,
+            has_update: false,
+            url: RELEASES_URL.to_string(),
+            ok: false,
+            current,
+        },
+    }
+}
+
 #[tauri::command]
 fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("settings") {
@@ -562,6 +771,29 @@ fn show_main(app: tauri::AppHandle) -> Result<(), String> {
         w.set_focus().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// 退出前把还在跑的引擎收掉。
+///
+/// 不杀的话：用户"排课排到一半直接退出"，引擎会继续算满整整 3 分钟、白占一格 CPU，
+/// 而且它的 `_MEI` 解包目录（约 105MB）和 temp 工作目录都得等下次启动的 7 天清理
+/// 才会被扫掉。在 `RunEvent::Exit` 里统一调用，覆盖托盘退出 / 「退出」命令 /
+/// 「关闭时退出」这几条路。
+fn kill_engine_if_running() {
+    let pid = match running_pid_slot().lock().ok().and_then(|g| *g) {
+        Some(p) => p,
+        None => return,
+    };
+    app_log(&format!("退出: 终止仍在运行的引擎 PID={}", pid));
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .creation_flags(0x0800_0000)
+        .output();
+    if let Ok(mut g) = running_pid_slot().lock() {
+        *g = None;
+    }
+    // 强杀留下的解包目录由外壳兜底（只清最近 15 分钟内、名字以 _MEI 开头的）
+    cleanup_mei_leftovers(SystemTime::now() - Duration::from_secs(15 * 60));
 }
 
 #[tauri::command]
@@ -678,6 +910,8 @@ fn cancel_scheduler() -> Result<bool, String> {
     app_log(&format!("用户取消排课：终止引擎进程树 PID={}", pid));
     match Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
+        // 不挡控制台的话，点「取消排课」时会闪一下黑框
+        .creation_flags(0x0800_0000)
         .output()
     {
         Ok(o) => app_log(&format!("taskkill 已执行，退出码={:?}", o.status.code())),
@@ -980,6 +1214,9 @@ fn run_scheduler(
     cmd.arg(&task_id);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // 引擎 exe 是 --noconsole 的，本来就不会有窗口；但开发版退化成
+    // `python engine.py` 时会闪黑框，统一挡掉。
+    cmd.creation_flags(0x0800_0000);
 
     // 本轮开始时清掉上一轮的取消标记；引擎起来后把 PID 登记出去，
     // 前端点「取消排课」时 cancel_scheduler 才找得到它。
@@ -1236,11 +1473,24 @@ fn run_scheduler(
 // ==================== 入口 ====================
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 启动时清理 7 天前的临时任务目录
             cleanup_old_temp_dirs();
+
+            // 启动事件写进日志：以后遇到"刚打开就不对劲"这类问题，日志里至少有个起点；
+            // 顺便把引擎解析结果记下来 —— 装完打不开最常见的原因就是找不到引擎。
+            app_log(&format!("=== 应用启动 v{} ===", env!("CARGO_PKG_VERSION")));
+            app_log(&format!("配置文件: {}", config_path().display()));
+            match build_engine_command(app.handle()) {
+                Ok((program, args)) => app_log(&format!(
+                    "排课引擎: {}{}",
+                    program,
+                    args.first().map(|a| format!(" + {}", a)).unwrap_or_default()
+                )),
+                Err(e) => app_log(&format!("⚠ 未找到排课引擎: {}", e)),
+            }
 
             // 恢复主窗口大小和位置
             if let Some(main) = app.get_webview_window("main") {
@@ -1303,8 +1553,11 @@ fn main() {
                     WindowEvent::CloseRequested { api, .. } => {
                         let cfg = load_config();
                         if cfg.close_to_tray {
+                            app_log("主窗口关闭 → 收进托盘（程序继续运行）");
                             api.prevent_close();
                             let _ = win.hide();
+                        } else {
+                            app_log("主窗口关闭 → 退出程序");
                         }
                     }
                     // 位置和尺寸都记：只拖动、或只拉边框，都要能记住。
@@ -1346,10 +1599,24 @@ fn main() {
             validate_input,
             get_progress,
             cancel_scheduler,
-            open_logs_dir
+            open_logs_dir,
+            open_url,
+            check_update,
+            log_frontend_error
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("排课助手启动失败");
+
+    // 用 build + run 而不是 .run(context)：为了拿到退出事件。
+    // 退出时要做两件事：① 把还在跑的引擎收掉（见 kill_engine_if_running）；
+    // ② 在日志末尾留一条"应用退出"，这样一次运行在日志里是有头有尾的
+    //    （启动那条在 setup 里写）。
+    app.run(|_app, event| {
+        if let tauri::RunEvent::Exit = event {
+            kill_engine_if_running();
+            app_log("=== 应用退出 ===");
+        }
+    });
 }
 
 // ==================== 单元测试 ====================
