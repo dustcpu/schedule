@@ -62,6 +62,8 @@ schedule/
 ├── README.md                    # 本文件
 ├── CHANGELOG.md                 # 更新日志（★ 每次推送前更新）
 ├── 启动-开发.bat                # Windows 一键启动开发模式（cargo run）
+├── 推送.bat                     # 双击即提交并推送到 GitHub（+ push-notes.txt 中文提示）
+│                                #   ⚠️ 内容刻意保持纯 ASCII 且带 chcp 65001，别改
 ├── .gitignore
 ├── docs/                        # 文档
 │   ├── 接口协议.md              # 外壳 ↔ 引擎的调用约定（算法同学必读）
