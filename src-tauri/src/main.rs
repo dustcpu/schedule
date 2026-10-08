@@ -520,10 +520,26 @@ fn generate_task_id() -> String {
 ///    然后 CARGO_MANIFEST_DIR/../engine/engine.py，最后 fallback mock_engine.py
 fn build_engine_command(app: &tauri::AppHandle) -> Result<(String, Vec<String>), String> {
     // 发布模式 sidecar
+    //
+    // ⚠️ 路径是 resource_dir + `resources/engine/engine.exe`，**不是** resource_dir + `engine/`。
+    // 原因：Windows 上 `resource_dir()` 返回的就是 **exe 所在目录**
+    // （tauri-utils `platform.rs`: `if cfg!(target_os = "windows") { return Ok(exe_dir) }`，
+    //  注释原文 "Windows also includes the resources in the executable folder"），
+    // 而安装包（NSIS `/oname=resources\engine\engine.exe`）把引擎装在
+    // `<安装目录>\resources\engine\` 下 —— 少写这层 `resources` 就永远找不到。
+    //
+    // 2026-10-08 实测确认：只找 `<exe目录>/engine/engine.exe` 时，安装包布局下会回落到
+    // 编译期的源码路径（`CARGO_MANIFEST_DIR/...`），在别人机器上该路径不存在 →
+    // 一路降级到 `Err("未找到排课引擎")`。因为 `validate_input` 也走这个函数，
+    // 后果是**装出来的版本连输入预检都失败**（自 v0.1.0 起一直如此，开发版不受影响）。
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let sidecar = resource_dir.join("engine").join("engine.exe");
-        if sidecar.exists() {
-            return Ok((sidecar.to_string_lossy().to_string(), vec![]));
+        // 先找现行布局（安装包 / 便携版都是 <exe目录>/resources/engine/），
+        // 再兼容早期便携布局（<exe目录>/engine/）。
+        for rel in ["resources/engine/engine.exe", "engine/engine.exe"] {
+            let sidecar = resource_dir.join(rel);
+            if sidecar.exists() {
+                return Ok((sidecar.to_string_lossy().to_string(), vec![]));
+            }
         }
     }
     // 开发模式：优先 engine.exe（和发布模式一致）
