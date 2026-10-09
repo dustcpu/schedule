@@ -16,18 +16,16 @@
 
 | 位置 | 当前值 | 说明 |
 |---|---|---|
-| `src-tauri/tauri.conf.json` | `0.1.11` | 安装包版本（外壳） |
-| `src-tauri/Cargo.toml` | `0.1.11` | Rust 包版本 |
-| `src-tauri/Cargo.lock` | `0.1.11` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
-| `README.md` | `v0.1.11` | 文档头部 |
-| `ui/settings.html` | `v0.1.11` | 设置页「关于」里显示的版本号 |
-| `engine/scheduler/__init__.py` | `0.1.11` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
+| `src-tauri/tauri.conf.json` | `0.1.12` | 安装包版本（外壳） |
+| `src-tauri/Cargo.toml` | `0.1.12` | Rust 包版本 |
+| `src-tauri/Cargo.lock` | `0.1.12` | 锁文件里本包版本（⚠️ 发版时易漏，需与 Cargo.toml 同步） |
+| `README.md` | `v0.1.12` | 文档头部 |
+| `ui/settings.html` | `v0.1.12` | 设置页「关于」里显示的版本号 |
+| `engine/scheduler/__init__.py` | `0.1.12` | 引擎独立版本号（2026-09-26 起与外壳 tag 对齐） |
 
 ---
 
-## [未发布]
-
-> 下一次改动写在这里；发版时整段转成新的版本小节（带日期）。
+## [v0.1.12] - 2026-10-10
 
 ### 新增
 - **走班制（选考科目走班）**。输入文件里加两张可选 sheet 就启用；**不加这两张表时，
