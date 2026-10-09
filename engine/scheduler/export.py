@@ -12,7 +12,7 @@ from typing import List, Dict, Any
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A3, landscape
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
@@ -30,8 +30,10 @@ from .solver.solve import Plan
 
 HEADER_FILL = "2563EB"
 SUBHEADER_FILL = "E5E7EB"
-CLASSES_PER_PAGE = 3  # PDF 每页放几个班的课表
 SPORTS_ACTIVITY = "体育活动"  # 附加行显示名（不参与排课）
+# 走班时段配色（2026-10-09）：与校方在用课表一致 —— 连排的第一节绿、第二节黄
+WALK_FILL_FIRST = "C6EFCE"
+WALK_FILL_SECOND = "FFEB9C"
 
 
 # ---------------------------------------------------------------- 字体
@@ -49,48 +51,6 @@ def register_font() -> str:
         except Exception:
             continue
     return "Helvetica"
-
-
-# ---------------------------------------------------------------- 课表网格
-def _cell_label(plan: Plan, class_id: str, subj: str, problem: Problem) -> str:
-    """课表格子显示「学科\\n教师姓名」（问题4，2026-10-01）。
-
-    免教师学科（体育/艺术/信息等）与空格只显示学科；
-    教师缺失时只显示学科，不出空行。
-    """
-    if not subj or problem is None:
-        return subj
-    if subj in NO_TEACHER_SUBJECTS:
-        return subj
-    tid = plan.assign.get((class_id, subj))
-    if not tid:
-        return subj
-    t = problem.teachers.get(tid)
-    if not t or not t.name:
-        return subj
-    return f"{subj}\n{t.name}"
-
-
-def _grid_rows(plan: Plan, ci, cfg, problem: Problem = None) -> List[List[str]]:
-    """生成某班课表的二维表（含表头）。
-
-    体育活动不参与排课决策，作为附加行显示在正课之后。
-    是否附加由 cfg.schedule.sports_activity 控制，节次与时钟由作息推算。
-    注意：格子值为「学科\\n教师」两行 —— verify_hard.load_result_grids 已同步改为
-    取第一行作学科，二者必须一起改（2026-10-01 问题4）。
-    """
-    labels = cfg.period_labels()
-    rows: List[List[str]] = [["时间"] + DAYS]
-    for per in cfg.periods():
-        row = [labels[per - 1]]
-        for d in range(1, NUM_DAYS + 1):
-            subj = plan.grid.get((ci.id, d, per), "")
-            row.append(_cell_label(plan, ci.id, subj, problem))
-        rows.append(row)
-    # 附加体育活动行（固定，不参与排课；标签由作息推算）
-    if getattr(cfg.schedule, "sports_activity", True):
-        rows.append([cfg.activity_label()] + [SPORTS_ACTIVITY] * NUM_DAYS)
-    return rows
 
 
 # ---------------------------------------------------------------- Excel
@@ -123,44 +83,179 @@ def write_xlsx(path: str, plans: List[Plan], problem: Problem) -> None:
     ws.column_dimensions["C"].width = 8
     ws.column_dimensions["D"].width = 60
 
-    # 每个方案一个 sheet
+    # 每个方案一个 sheet：横向总表（行 = 天 × 节，列 = 每个行政班）
+    # 2026-10-09 改版：原先是"每班一块、纵向堆在同一个 sheet 里"（25 块 × 13 行），
+    # 现改为一张总表，便于整体查看，形态与校方在用课表一致。
     for p in plans:
         w = wb.create_sheet(f"方案{p.index}")
-        r = 1
-        for ci in problem.classes:
-            suffix = ci.elective
-            title_text = f"{ci.name or ci.id}　（{suffix}）" if suffix else (ci.name or ci.id)
-            title = w.cell(row=r, column=1, value=title_text)
-            title.font = Font(bold=True, size=12)
-            r += 1
-            rows = _grid_rows(p, ci, cfg, problem)
-            for ri, row in enumerate(rows):
-                # 问题4：格子含「学科\n教师」两行，需要 wrap_text + 更高行高；
-                # 体育活动行（最后一行，若存在）仍是单行，不额外加高。
-                is_sports_row = (ri == len(rows) - 1
-                                 and getattr(cfg.schedule, "sports_activity", True))
-                if ri > 0 and not is_sports_row:
-                    w.row_dimensions[r + ri].height = 26
-                for cj, val in enumerate(row, start=1):
-                    c = w.cell(row=r + ri, column=cj, value=val)
-                    c.alignment = Alignment(horizontal="center", vertical="center",
-                                            wrap_text=(ri > 0 and not is_sports_row))
-                    c.border = border
-                    if ri == 0:
-                        c.font = Font(bold=True)
-                        c.fill = PatternFill("solid", fgColor=SUBHEADER_FILL)
-            r += len(rows) + 2  # 班级之间空两行
-        w.column_dimensions["A"].width = 18
-        for col in "BCDEF":
-            w.column_dimensions[col].width = 14
+        _write_timetable_sheet(w, p, problem, border)
 
     # 每个方案一张任课表：课表网格自 2026-10-01 起为「学科\n教师」两行，
     # verify_hard.load_result_grids 已同步改为取第一行作学科，二者必须一起改；
     # 任课信息另出 sheet，便于按班级查看。
     for p in plans:
         _write_assign_sheet(wb, f"任课表{p.index}", p, problem, border)
+        _write_walk_sheet(wb, f"走班表{p.index}", p, problem, border)
 
     wb.save(path)
+
+
+def _timetable_rows(plan: Plan, problem: Problem):
+    """横向总表的数据（含表头）—— Excel 与 PDF 共用，保证两种输出形态一致。
+
+    返回 (rows, fills)：fills 与 rows 同形，值为该格的填充色（None = 不上色）。
+    行 = 天 × 节（末尾可附加体育活动行），列 = 周 | 节 | 各班。形态对齐校方在用课表。
+    """
+    cfg = problem.config
+    labels = cfg.period_labels()
+    classes = problem.classes
+    rows: List[List[str]] = [["周", "节"] + [ci.name or ci.id for ci in classes]]
+    fills: List[List[Any]] = [[None] * len(rows[0])]
+    for d in range(1, NUM_DAYS + 1):
+        for k, per in enumerate(cfg.periods()):
+            row = [DAYS[d - 1] if k == 0 else "", labels[per - 1]]
+            fl: List[Any] = [None, None]
+            for ci in classes:
+                txt, fill = _cell_render(plan, ci.id, d, per, problem)
+                row.append(txt)
+                fl.append(fill)
+            rows.append(row)
+            fills.append(fl)
+    if getattr(cfg.schedule, "sports_activity", True):
+        rows.append(["", cfg.activity_label()] + [SPORTS_ACTIVITY] * len(classes))
+        fills.append([None] * len(rows[0]))
+    return rows, fills
+
+
+def _write_timetable_sheet(w, plan: Plan, problem: Problem, border) -> None:
+    """一张横向总表：行 = 天 × 节，列 = 每个行政班。
+
+    2026-10-09 改版：原先是"每班一块、纵向堆在同一个 sheet 里"，
+    现改为一张总表，便于整体查看与横向打印，形态与校方在用课表一致。
+    格子只写学科；教师信息见「任课表N」。
+    """
+    rows, fills = _timetable_rows(plan, problem)
+    for r, row in enumerate(rows, start=1):
+        _write_row(w, r, row, border, header=(r == 1), fills=fills[r - 1])
+
+    w.column_dimensions["A"].width = 6
+    w.column_dimensions["B"].width = 20
+    for j in range(3, len(rows[0]) + 1):
+        w.column_dimensions[w.cell(row=1, column=j).column_letter].width = 12
+    w.freeze_panes = "C2"     # 横向滚动时锁定「周 / 节」两列
+
+
+def _write_row(w, r: int, cells: List[str], border, header: bool = False,
+               fills: List[Any] = None) -> None:
+    """写一行：统一加边框 / 居中 / 自动换行（走班格是多行文本，必须 wrap）。
+
+    fills：与 cells 同形，非空处按该颜色填充（走班时段标记）。
+    """
+    multiline = any(isinstance(v, str) and "\n" in v for v in cells)
+    for j, v in enumerate(cells, start=1):
+        c = w.cell(row=r, column=j)
+        if v:
+            c.value = v
+        c.border = border
+        c.alignment = Alignment(horizontal="center", vertical="center",
+                                wrap_text=multiline)
+        if header:
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor=SUBHEADER_FILL)
+        elif fills and j - 1 < len(fills) and fills[j - 1]:
+            c.fill = PatternFill("solid", fgColor=fills[j - 1])
+    w.row_dimensions[r].height = 30 if multiline else 18
+
+
+def _walk_here(plan: Plan, class_id: str, d: int, per: int, problem: Problem):
+    """这一格该班是否在走班？是则返回 (独立时间ID, 起始节, 相对第几节)。"""
+    if not getattr(problem, "walk_enabled", False):
+        return None
+    slots = {s.id: s for s in problem.walk_slots}
+    for sid, starts in (getattr(plan, "walk_at", None) or {}).items():
+        s = slots.get(sid)
+        if not s:
+            continue
+        block = max(1, int(s.block))
+        for sd, sp in starts:
+            if sd == d and sp <= per <= sp + block - 1:
+                return sid, sp, per - sp
+    return None
+
+
+def _walk_text(class_id: str, sid: str, problem: Problem) -> str:
+    """走班格的显示文本：该班这一节分别去哪些教学班、上哪门课。"""
+    lines = []
+    for tc in problem.teaching_classes:
+        if tc.slot != sid or class_id not in tc.source_classes:
+            continue
+        lines.append(f"{tc.subject} → {tc.classroom or '走班教室'}")
+    return "\n".join(lines)
+
+
+def _cell_render(plan: Plan, class_id: str, d: int, per: int, problem: Problem):
+    """返回 (显示文本, 填充色)。填充色为 None 表示不上色。
+
+    - 有常规课 → 学科
+    - 走班格   → 多行「学科 → 去向」，并按时段第几节上色
+    """
+    subj = plan.grid.get((class_id, d, per), "")
+    if subj:
+        return subj, None
+    w = _walk_here(plan, class_id, d, per, problem)
+    if not w:
+        return "", None
+    sid, _sp, k = w
+    return _walk_text(class_id, sid, problem), (WALK_FILL_FIRST if k == 0 else WALK_FILL_SECOND)
+
+
+def _fmt_walk_time(plan: Plan, sid: str, problem: Problem) -> str:
+    """把某个独立时间在该方案里的落位格式化成「周二 第7-8节；周四 第3-4节」。"""
+    s = next((x for x in problem.walk_slots if x.id == sid), None)
+    if not s:
+        return ""
+    block = max(1, int(s.block))
+    parts = []
+    for d, sp in (getattr(plan, "walk_at", None) or {}).get(sid, []):
+        label = DAYS[d - 1] if 1 <= d <= NUM_DAYS else "?"
+        parts.append(f"{label} 第{sp}-{sp + block - 1}节" if block > 1
+                     else f"{label} 第{sp}节")
+    return "；".join(parts)
+
+
+def _write_walk_sheet(wb, sheet_name: str, plan: Plan, problem: Problem, border) -> None:
+    """走班明细：教学班 / 独立时间 / 学科 / 来源 / 合计 / 教室 / 教师 / 时段。
+
+    走班未启用时不建这张表（行为与之前完全一致）。
+    """
+    if not getattr(problem, "walk_enabled", False):
+        return
+    w = wb.create_sheet(sheet_name)
+    header = ["教学班", "独立时间", "学科", "来源（班级　人数）",
+              "合计人数", "教室", "任课教师", "本方案时段"]
+    for j, v in enumerate(header, start=1):
+        c = w.cell(row=1, column=j, value=v)
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor=SUBHEADER_FILL)
+        c.border = border
+    r = 2
+    for tc in problem.teaching_classes:
+        src = "；".join(f"{(cid or '?')}　{n}" for cid, n in tc.sources)
+        vals = [tc.id, tc.slot, tc.subject, src, tc.size or "",
+                tc.classroom, problem.teacher_name(tc.teacher_id) or "（未指定）",
+                _fmt_walk_time(plan, tc.slot, problem)]
+        fill = WALK_FILL_FIRST
+        for j, v in enumerate(vals, start=1):
+            c = w.cell(row=r, column=j, value=v)
+            c.border = border
+            c.alignment = Alignment(horizontal="center", vertical="center",
+                                    wrap_text=(j == 4))
+            if j == 1:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    widths = [16, 10, 8, 30, 10, 14, 12, 22]
+    for j, wd in enumerate(widths, start=1):
+        w.column_dimensions[w.cell(row=1, column=j).column_letter].width = wd
 
 
 def _write_assign_sheet(wb, sheet_name: str, plan: Plan, problem: Problem, border) -> None:
@@ -218,14 +313,13 @@ def write_pdf(path: str, task_id: str, plans: List[Plan], problem: Problem,
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("T", parent=styles["Title"], fontName=font,
                                  fontSize=16, leading=22)
-    h2 = ParagraphStyle("H2", parent=styles["Heading2"], fontName=font,
-                        fontSize=12, leading=16)
     body = ParagraphStyle("B", parent=styles["Normal"], fontName=font,
                           fontSize=9, leading=13)
 
-    doc = SimpleDocTemplate(path, pagesize=A4,
-                            leftMargin=16 * mm, rightMargin=16 * mm,
-                            topMargin=16 * mm, bottomMargin=16 * mm)
+    # A3 横向：25 个班横向排开，与校方在用课表的形态一致
+    doc = SimpleDocTemplate(path, pagesize=landscape(A3),
+                            leftMargin=12 * mm, rightMargin=12 * mm,
+                            topMargin=12 * mm, bottomMargin=12 * mm)
     story: List[Any] = []
 
     # 第 1 页：总览
@@ -255,44 +349,46 @@ def write_pdf(path: str, task_id: str, plans: List[Plan], problem: Problem,
     ]))
     story.append(t)
 
-    # 每方案若干页
+    # 每方案一页：横向总表（行 = 天 × 节，列 = 每个行政班）
     for p in plans:
-        chunks = [problem.classes[i:i + CLASSES_PER_PAGE]
-                  for i in range(0, len(problem.classes), CLASSES_PER_PAGE)] or [[]]
-        for ci, group in enumerate(chunks):
-            story.append(PageBreak())
-            suffix = f"（{ci + 1}/{len(chunks)}）" if len(chunks) > 1 else ""
-            story.append(Paragraph(f"方案{p.index}：{p.name}　评分 {p.score:.1f}{suffix}",
-                                   title_style))
-            story.append(Spacer(1, 4 * mm))
-            for c in group:
-                suffix = c.elective
-                class_title = f"{c.name or c.id}　（{suffix}）" if suffix else (c.name or c.id)
-                story.append(Paragraph(class_title, h2))
-                rows = _grid_rows(p, c, cfg, problem)
-                # 问题4：格子含「学科\n教师」两行。reportlab Table 的纯字符串不解析换行，
-                # 含 \n 的格子转成 Paragraph 才能显示两行（行高自动撑开）。
-                cell_style = ParagraphStyle(
-                    "cell", fontName=font, fontSize=8, leading=10,
-                    alignment=1)  # TA_CENTER
-                rendered = [
-                    [Paragraph(str(v).replace("\n", "<br/>"), cell_style)
-                     if isinstance(v, str) and "\n" in v else v
-                     for v in row]
-                    for row in rows]
-                tbl = Table(rendered, colWidths=[34 * mm] + [29 * mm] * NUM_DAYS)
-                tbl.setStyle(TableStyle([
-                    ("FONTNAME", (0, 0), (-1, -1), font),
-                    ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#" + SUBHEADER_FILL)),
-                    ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
-                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ]))
-                story.append(tbl)
-                story.append(Spacer(1, 5 * mm))
+        story.append(PageBreak())
+        story.append(Paragraph(f"方案{p.index}：{p.name}　评分 {p.score:.1f}", title_style))
+        story.append(Spacer(1, 3 * mm))
+        rows, fills = _timetable_rows(p, problem)
+        cell_style = ParagraphStyle("cell", fontName=font, fontSize=6.5, leading=8,
+                                    alignment=1)  # TA_CENTER
+        # 走班格可能是多行文本；reportlab 的纯字符串不解析换行，转 Paragraph 才能换行
+        rendered = [
+            [Paragraph(str(v).replace("\n", "<br/>"), cell_style)
+             if isinstance(v, str) and "\n" in v else str(v)
+             for v in row]
+            for row in rows]
+        n_cls = len(problem.classes)
+        avail = 420 * mm - 24 * mm          # A3 横向减去左右边距
+        first_two = 6 * mm + 22 * mm        # 「周」「节」两列
+        per_cls = max((avail - first_two) / max(n_cls, 1), 8 * mm)
+        tbl = Table(rendered, colWidths=[6 * mm, 22 * mm] + [per_cls] * n_cls,
+                    repeatRows=1)
+        cmds = [
+            ("FONTNAME", (0, 0), (-1, -1), font),
+            ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#" + SUBHEADER_FILL)),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ]
+        # 走班时段按格上色（与 Excel 一致：连排第一节绿、第二节黄）
+        for ri, fl in enumerate(fills):
+            if ri >= len(rendered):
+                break
+            for ci_, fill in enumerate(fl):
+                if fill:
+                    cmds.append(("BACKGROUND", (ci_, ri), (ci_, ri),
+                                 colors.HexColor("#" + fill)))
+        tbl.setStyle(TableStyle(cmds))
+        story.append(tbl)
 
     doc.build(story)
 

@@ -62,6 +62,9 @@ class ModelBundle:
     cand_pairs_of_t: Dict[str, List[Tuple[str, str]]] = field(default_factory=dict)  # 教师->候选课程
     zs_by_td: Dict[Tuple[str, int], List[Any]] = field(default_factory=dict)    # (教师,天)->z
     week_total_of_t: Dict[str, Any] = field(default_factory=dict)      # 教师周课时 IntVar
+    # ---- 走班（2026-10-09）----
+    # g[(独立时间ID, 天, 起始节)] = 该独立时间从这一节开始连排若干节
+    g: Dict[Tuple[str, int, int], Any] = field(default_factory=dict)
 
     def objective_expr(self, weights: Dict[str, int]):
         """按给定权重档位组装目标表达式；全部为 0 时返回 None。"""
@@ -88,6 +91,136 @@ def apply_objective(bundle: ModelBundle, weights: Dict[str, int]) -> None:
     bundle.model.Minimize(expr if expr is not None else 0)
 
 
+# ---------------------------------------------------------------- 走班（2026-10-09）
+def _build_walk_here(p: Problem, model, days, periods, n_per):
+    """H30 / H31：独立时间落位 + 组内同时开课。
+
+    返回 (walk_here, gd, warn)：
+      walk_here[(班级, 天, 节)] = 该班这一格是否在走班（0/1 变量）
+      gd[(独立时间, 天, 节)]   = 该独立时间在这一节是否上课（0/1）
+
+    ⚠️ walk_here 交给 H1 用：「该格恰好一门课」改写成「常规课 + 走班 = 1」，
+    这样 **H32（参与班在走班时段不排常规课）无需单独约束，天然成立**。
+    """
+    warn: List[str] = []
+    if not p.walk_enabled:
+        return {}, {}, {}, warn
+
+    # H30：g[(独立时间, 天, 起始节)] = 走班从这一节开始，连排 block 节
+    g: Dict[Key, Any] = {}
+    for s in p.walk_slots:
+        block = max(1, int(s.block))
+        last = n_per - block + 1
+        if last < 1:
+            warn.append(f"独立时间「{s.id}」声明连排 {block} 节，超过一天的节数（{n_per}），"
+                        f"已按整天处理。")
+            block, last = n_per, 1
+        vs = []
+        for d in days:
+            for per in periods:
+                if per > last:
+                    continue
+                v = model.NewBoolVar(f"g_{s.id}_{d}_{per}")
+                g[(s.id, d, per)] = v
+                vs.append(v)
+        if not vs:
+            warn.append(f"独立时间「{s.id}」没有可落位的节次，已忽略该独立时间。")
+            continue
+        model.Add(sum(vs) == max(1, int(s.times_per_week)))
+
+    # 覆盖指示 gd：某独立时间在某一节是否在上课（由"起始 + 连排"展开）
+    gd: Dict[Key, Any] = {}
+    for s in p.walk_slots:
+        block = max(1, int(s.block))
+        for d in days:
+            for per in periods:
+                terms = [g[(s.id, d, pp)] for pp in periods
+                         if pp <= per <= pp + block - 1 and (s.id, d, pp) in g]
+                if not terms:
+                    continue
+                if len(terms) == 1:
+                    gd[(s.id, d, per)] = terms[0]
+                else:
+                    v = model.NewBoolVar(f"gd_{s.id}_{d}_{per}")
+                    model.Add(v == sum(terms))
+                    gd[(s.id, d, per)] = v
+
+    # 同一独立时间的多次落位彼此不能重叠 —— 否则 walk_here 会取到 2，
+    # 而它是 BoolVar，`sum(x) + wh == 1` 会直接不可满足（走班样本实测踩过）
+    for s in p.walk_slots:
+        _blk = max(1, int(s.block))
+        for d in days:
+            for per in periods:
+                terms = [g[(s.id, d, pp)] for pp in periods
+                         if pp <= per <= pp + _blk - 1 and (s.id, d, pp) in g]
+                if len(terms) > 1:
+                    model.AddAtMostOne(terms)
+
+    # 同一格最多落一个独立时间（两个走班时段不能重叠）
+    for d in days:
+        for per in periods:
+            terms = [gd[(s.id, d, per)] for s in p.walk_slots if (s.id, d, per) in gd]
+            if len(terms) > 1:
+                model.AddAtMostOne(terms)
+
+    # 班 → 它参与的独立时间
+    slots_of_class: Dict[str, set] = {}
+    for tc in p.teaching_classes:
+        if not tc.slot:
+            continue
+        for cid in tc.source_classes:
+            slots_of_class.setdefault(cid, set()).add(tc.slot)
+
+    # H31：walk_here
+    walk_here: Dict[Key, Any] = {}
+    for cid, sids in slots_of_class.items():
+        for d in days:
+            for per in periods:
+                terms = [gd[(sid, d, per)] for sid in sids if (sid, d, per) in gd]
+                if not terms:
+                    continue
+                if len(terms) == 1:
+                    walk_here[(cid, d, per)] = terms[0]
+                else:
+                    v = model.NewBoolVar(f"wh_{cid}_{d}_{per}")
+                    model.Add(v == sum(terms))
+                    walk_here[(cid, d, per)] = v
+
+    return walk_here, gd, g, warn
+
+
+def _add_walk_teacher(p: Problem, model, zs_by_slot, gd, days, periods) -> List[str]:
+    """H33：教学班的任课教师，在走班时段不能同时上常规课。
+
+    教学班的教师必须由教务指定（走班方案里本来就写了）；没写就不参与该约束，
+    并给出告警——绝不静默。
+    """
+    warn: List[str] = []
+    if not p.walk_enabled:
+        return warn
+    seen_missing = 0
+    for tc in p.teaching_classes:
+        tid = tc.teacher_id
+        if not tid:
+            seen_missing += 1
+            continue
+        if tid not in p.teachers:
+            warn.append(f"走班教学班「{tc.id}」的任课教师 {tid} 不在教师表里，"
+                        f"该教学班不参与教师冲突约束。")
+            continue
+        for d in days:
+            for per in periods:
+                gv = gd.get((tc.slot, d, per)) if tc.slot else None
+                if gv is None:
+                    continue
+                for zv in zs_by_slot.get((tid, d, per), ()):   # 该教师这一格的所有课
+                    model.Add(zv + gv <= 1)
+    if seen_missing:
+        warn.append(f"有 {seen_missing} 个走班教学班没有指定任课教师，"
+                    f"这些教学班不参与教师冲突约束（建议在「走班教学班」表里补上）。")
+    return warn
+
+
 def build_model(p: Problem) -> ModelBundle:
     cfg = p.config
     model = cp_model.CpModel()
@@ -101,6 +234,8 @@ def build_model(p: Problem) -> ModelBundle:
     teacher_of: Dict[Tuple[str, str], Any] = {}
     block_len_of: Dict[Tuple[str, str], int] = {}
     for c in p.courses:
+        if getattr(c, "is_walk", False):
+            continue      # H34：走班课由「独立时间」承载，不生成常规 x 变量
         subjects_by_class.setdefault(c.class_id, []).append(c.subject)
         req[(c.class_id, c.subject)] = c.weekly
         teacher_of[(c.class_id, c.subject)] = c.teacher_id
@@ -116,11 +251,22 @@ def build_model(p: Problem) -> ModelBundle:
 
     warnings: List[str] = []
 
-    # ---------- H1 每格唯一 ----------
+    # ---------- H30 / H31 走班：独立时间落位 + 组内同时开课 ----------
+    # 必须在 H1 之前算出来：walk_here 要并入"每格恰好一门课"的等式。
+    walk_here, gd_, g_, _wm = _build_walk_here(p, model, days, periods, n_per)
+    warnings.extend(_wm)
+
+    # ---------- H1 每格唯一（走班格：常规课 + 走班 = 1）----------
     for cid, subs in subjects_by_class.items():
         for d in days:
             for per in periods:
-                model.AddExactlyOne(x[(cid, s, d, per)] for s in subs)
+                terms = [x[(cid, s, d, per)] for s in subs]
+                wh = walk_here.get((cid, d, per))
+                if wh is None:
+                    model.AddExactlyOne(terms)
+                else:
+                    # H32 由此天然成立：走班时该格不再有常规课
+                    model.Add(sum(terms) + wh == 1)
 
     # ---------- H2 周课时 ----------
     for (cid, s), n in req.items():
@@ -131,7 +277,9 @@ def build_model(p: Problem) -> ModelBundle:
     cand_of: Dict[Tuple[str, str], List[str]] = {}
     cand_pairs_of_t: Dict[str, List[Tuple[str, str]]] = {}
     for c in p.courses:
-        if c.subject in NO_TEACHER_SUBJECTS:
+        # 走班课由教学班承载（任课教师写在教学班表里），不参与 y/z 教师决策；
+        # 否则这里会为它建 y/z，而 x 并不存在 → KeyError（走班样本实测）
+        if c.subject in NO_TEACHER_SUBJECTS or getattr(c, "is_walk", False):
             continue
         cands = [t for t in (c.teacher_candidates or []) if t in p.teachers]
         if not cands:
@@ -177,6 +325,9 @@ def build_model(p: Problem) -> ModelBundle:
 
     for (_t, _d, _per), lst in zs_by_slot.items():
         model.AddAtMostOne(lst)      # 同一教师同一天同一节最多带 1 个班
+
+    # ---------- H33 走班教师：走班时段不排常规课 ----------
+    warnings.extend(_add_walk_teacher(p, model, zs_by_slot, gd_, days, periods))
 
     # ---------- H26 教师带班数上下界（对称性破除 + 减少闲置）----------
     # 13 位语文教师对 25 个班完全对称，求解器会在等价解上白耗；
@@ -567,6 +718,7 @@ def build_model(p: Problem) -> ModelBundle:
         cand_pairs_of_t=cand_pairs_of_t,
         zs_by_td=zs_by_td,
         week_total_of_t=week_total_of_t,
+        g=g_,
     )
     # 默认档位：用配置里的权重，行为与改造前完全一致
     apply_objective(bundle, {

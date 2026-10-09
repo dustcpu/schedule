@@ -42,6 +42,8 @@ class Plan:
     grid: Grid = field(default_factory=dict)
     profile: str = ""   # 该方案所用的权重档位名，保证「名副其实」
     assign: Assign = field(default_factory=dict)   # 求解器决定的任课（P0）
+    # 走班（2026-10-09）：独立时间ID -> 该方案里落位的 [(天, 起始节), ...]
+    walk_at: Dict[str, List[Tuple[int, int]]] = field(default_factory=dict)
 
 
 def _extract_assign(sol_y: Dict[Any, int]) -> Assign:
@@ -55,6 +57,17 @@ def _extract_grid(sol: Dict[Any, int]) -> Grid:
         if v == 1:
             grid[(cid, d, per)] = s
     return grid
+
+
+def _extract_walk_at(sol_g: Dict[Any, int]) -> Dict[str, List[Tuple[int, int]]]:
+    """走班落位：独立时间ID -> [(天, 起始节), ...]（2026-10-09）。"""
+    out: Dict[str, List[Tuple[int, int]]] = {}
+    for (sid, d, per), v in (sol_g or {}).items():
+        if v == 1:
+            out.setdefault(sid, []).append((d, per))
+    for lst in out.values():
+        lst.sort()
+    return out
 
 
 def _calc_metrics(sol: Dict[Any, int], bundle: ModelBundle,
@@ -176,7 +189,8 @@ def solve_plans(bundle: ModelBundle, log=None) -> Tuple[List[Plan], List[str], s
     """
     cfg = bundle.cfg
     warnings: List[str] = list(bundle.warnings)
-    raw: List[Tuple[Dict[Any, int], Dict[Any, int], str]] = []   # (解x, 解y, 方案名)
+    # (解x, 解y, 方案名, 解g)
+    raw: List[Tuple[Dict[Any, int], Dict[Any, int], str, Dict[Any, int]]] = []
 
     target = max(cfg.solver.min_plans, min(cfg.solver.max_plans, cfg.solver.num_plans))
 
@@ -232,7 +246,8 @@ def solve_plans(bundle: ModelBundle, log=None) -> Tuple[List[Plan], List[str], s
 
         sol = {key: solver.Value(v) for key, v in bundle.x.items()}
         sol_y = {key: solver.Value(v) for key, v in bundle.y.items()}
-        raw.append((sol, sol_y, pname))
+        sol_g = {key: solver.Value(v) for key, v in bundle.g.items()}
+        raw.append((sol, sol_y, pname, sol_g))
 
         # no-good：下一套方案至少要与本套相差 k 格
         ones = [bundle.x[key] for key, v in sol.items() if v == 1]
@@ -258,7 +273,7 @@ def solve_plans(bundle: ModelBundle, log=None) -> Tuple[List[Plan], List[str], s
     # 评分：绝对质量分（所有方案用同一把尺子，不再按相对排名）
     n_classes = len(bundle.problem.classes)
     plans: List[Plan] = []
-    for sol, sol_y, pname in raw:
+    for sol, sol_y, pname, sol_g in raw:
         m = _calc_metrics(sol, bundle, sol_y)
         score, sub = absolute_score(m, cfg, n_classes)
         plans.append(Plan(
@@ -269,6 +284,7 @@ def solve_plans(bundle: ModelBundle, log=None) -> Tuple[List[Plan], List[str], s
             grid=_extract_grid(sol),
             profile=pname,
             assign=_extract_assign(sol_y),
+            walk_at=_extract_walk_at(sol_g),
         ))
 
     # 按评分排序（高分在前），只改编号、不改名字

@@ -25,7 +25,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from scheduler.config import NUM_DAYS
+from scheduler.config import DAYS, NUM_DAYS
 from scheduler.data.load import load_problem, NO_TEACHER_SUBJECTS
 from scheduler.data.validate import validate
 from scheduler.solver.model import build_model
@@ -37,6 +37,10 @@ def check_plan(problem, plan) -> list:
     periods = cfg.periods()
     days = list(range(1, NUM_DAYS + 1))
     errs = []
+    # 走班科目由「走班格」承载：课时与任课都在走班表里核算，
+    # 常规校验（H2/H25）跳过它们（2026-10-09）
+    _walk_subj = {tc.subject for tc in
+                  (getattr(problem, "teaching_classes", None) or [])}
 
     # H1 每格唯一且不为空
     for ci in problem.classes:
@@ -47,6 +51,8 @@ def check_plan(problem, plan) -> list:
 
     # H2 周课时
     for c in problem.courses:
+        if c.subject in _walk_subj:
+            continue
         cnt = sum(1 for (cid, _d, _p), s in plan.grid.items()
                   if cid == c.class_id and s == c.subject)
         if cnt != c.weekly:
@@ -77,7 +83,7 @@ def check_plan(problem, plan) -> list:
 
     # H25 教师任职资格：每门课恰好一位教师，且在候选集内、学科匹配
     for c in problem.courses:
-        if c.subject in NO_TEACHER_SUBJECTS:
+        if c.subject in NO_TEACHER_SUBJECTS or c.subject in _walk_subj:
             continue
         if not (c.teacher_candidates or c.teacher_id):
             errs.append(f"H25 无候选教师: {c.class_id} {c.subject}")
@@ -248,7 +254,10 @@ def load_result_grids(path, classes, periods):
     """从 result.xlsx 解析每个方案、每个班的课表网格。
 
     返回 {sheet名: {(班级标题, 天, 节): 学科}}。
-    跳过节次 > periods_per_day 的附加行（如体育活动），它们不参与排课。
+
+    2026-10-09：课表已改成「横向总表」（行 = 天 × 节，列 = 每个行政班），
+    这里同步改为按表头解析班级列；走班格取第一行（也就是那门学科），
+    这样 H1/H2 对走班科目同样成立（走班格数 == 走班课时）。
     """
     from openpyxl import load_workbook
 
@@ -259,29 +268,67 @@ def load_result_grids(path, classes, periods):
             continue
         ws = wb[sn]
         grid = {}
-        cur = None
-        for row in ws.iter_rows(values_only=True):
-            cells = [("" if c is None else str(c)) for c in row]
-            cells = [c for c in cells if c != ""]
-            if not cells:
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            out[sn] = grid
+            continue
+        head = [("" if c is None else str(c)).strip() for c in rows[0]]
+        cls_cols = [(i, head[i]) for i in range(2, len(head)) if head[i]]
+        cur_day = None
+        for row in rows[1:]:
+            vals = [("" if c is None else str(c)) for c in row]
+            if len(vals) < 3:
                 continue
-            if len(cells) == 1:
-                cur = cells[0]
+            day_txt, per_txt = vals[0].strip(), vals[1].strip()
+            if day_txt in DAYS:
+                cur_day = DAYS.index(day_txt) + 1
+            if not per_txt.startswith("第"):
                 continue
-            if len(cells) >= 6 and cells[0].startswith("第"):
-                try:
-                    per = int(cells[0].split("节")[0].replace("第", ""))
-                except ValueError:
+            try:
+                per = int(per_txt.split("节")[0].replace("第", "").strip())
+            except ValueError:
+                continue
+            if cur_day is None or per not in periods:
+                continue
+            for i, title in cls_cols:
+                if i >= len(vals):
                     continue
-                if cur is None or per not in periods:
-                    continue
-                for i, d in enumerate(range(1, NUM_DAYS + 1), start=1):
-                    val = cells[i]
-                    # 问题4（2026-10-01）：课表格子自本版起为「学科\n教师」两行，
-                    # 校验只认学科 —— 必须取第一行，否则 H1–H5 全部误判。
-                    grid[(cur, d, per)] = val.split("\n")[0].strip()
+                v = vals[i].strip()
+                # 走班格是多行「学科 → 去向」，校验只认学科（取第一行）
+                grid[(title, cur_day, per)] = v.split("\n")[0].strip() if v else ""
         out[sn] = grid
     return out
+
+
+def load_walk_sheets(path):
+    """从 result.xlsx 解析「走班表N」：{sheet名: [(教学班, 独立时间, 时段文本)]}。"""
+    from openpyxl import load_workbook
+    wb = load_workbook(path, data_only=True)
+    out = {}
+    for sn in wb.sheetnames:
+        if not sn.startswith("走班表"):
+            continue
+        rows = list(wb[sn].iter_rows(values_only=True))
+        recs = []
+        for r in rows[1:]:
+            vals = [("" if c is None else str(c)).strip() for c in r]
+            if len(vals) >= 8 and vals[0]:
+                recs.append((vals[0], vals[1], vals[7]))
+        out[sn] = recs
+    return out
+
+
+def check_walk_sheets(xlsx_path, errs):
+    """H31：同一「独立时间」下各教学班的时段必须完全一致（走班就是同时开课）。"""
+    for sn, recs in load_walk_sheets(xlsx_path).items():
+        by_slot = defaultdict(set)
+        for tcid, sid, times in recs:
+            by_slot[sid].add(times)
+        for sid, times in by_slot.items():
+            times = {t for t in times if t}
+            if len(times) > 1:
+                errs.append(
+                    f"H31 独立时间「{sid}」下各教学班时段不一致（{sn}）：{sorted(times)}")
 
 
 def verify_xlsx(in_dir, xlsx_path):
@@ -305,6 +352,7 @@ def verify_xlsx(in_dir, xlsx_path):
     print(f"方案 sheet: {sorted(grids)}")
 
     errs = []
+    check_walk_sheets(xlsx_path, errs)
 
     # 1) 结构：sheet 名与 plans 对应
     plans_meta = status.get("plans", [])

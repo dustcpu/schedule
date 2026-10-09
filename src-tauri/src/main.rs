@@ -84,7 +84,9 @@ struct Config {
     hard_limits: HardLimits,
     /// 窗口状态（大小和位置，启动时恢复）
     window_state: Option<WindowState>,
-    /// 上次使用的输入文件路径
+    /// ⚠️ **已废弃，不再写入**（2026-10-09 用户拍板：不记住上次用的输入文件，
+    /// 每次打开都要重新选）。保留字段只为兼容老 `config.json` —— 删字段前请先确认
+    /// 老配置里残留的该键不会导致反序列化失败。读取处已全部移除。
     last_input_file: Option<String>,
 }
 
@@ -1160,12 +1162,10 @@ fn run_scheduler(
         fs::create_dir_all(out).map_err(|_| "输出目录不存在，且无法创建".to_string())?;
     }
 
-    // 保存上次使用的输入文件
-    {
-        let mut cfg = load_config();
-        cfg.last_input_file = Some(input_path.clone());
-        let _ = save_config(&cfg);
-    }
+    // ⚠️ 这里以前会把本次用的输入文件写进 config（last_input_file），下次打开程序
+    // 自动带出来并触发预检。2026-10-09 用户拍板去掉这个「记忆」：
+    // 每次打开都要自己重新选文件，选完立刻预检 —— 不希望程序记着上次读过哪份。
+    // Config 里的字段仍保留（老配置兼容），但**不再写入**，读取处也已移除。
 
     let task_id = generate_task_id();
     let work_dir = temp_work_dir().join(&task_id);

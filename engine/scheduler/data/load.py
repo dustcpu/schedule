@@ -104,6 +104,10 @@ class CourseReq:
     teacher_candidates: List[str] = field(default_factory=list)
     # True = 「任课安排」sheet 或「特殊要求」显式指派，候选恒为 1 人
     locked: bool = False
+    # True = 这门课由「走班」承载（该班在走班时段去各自的教学班上课）。
+    # 走班科目的课时由「独立时间」保证，因此**不再生成常规的 x 变量**，
+    # 否则会同一天既排常规课、又排走班课，课时重复计数（2026-10-09）。
+    is_walk: bool = False
 
     def __post_init__(self):
         # 兼容只给 teacher_id 的构造方式（只给一位教师语义上等于显式指派）
@@ -179,6 +183,47 @@ class StructuredConstraint:
 
 
 @dataclass
+class TeachingClass:
+    """走班「教学班」（2026-10-09 走班设计）。
+
+    一个教学班由若干**来源**拼成：来源 = (行政班ID, 该班参与本教学班的人数)。
+    人数只用于核对与告警，**不参与求解** —— 排课只需要知道"哪几门课同时开"，
+    至于哪些学生去哪间教室，由教务自己安排。
+    """
+    id: str
+    subject: str
+    slot: str = ""            # 所属「独立时间」ID；同组必须同时开课
+    sources: List[Tuple[str, int]] = field(default_factory=list)
+    classroom: str = ""       # 教室：只登记与输出，不做容量校验
+    teacher_id: str = ""      # 任课教师；留空则由引擎分配
+
+    @property
+    def source_classes(self) -> List[str]:
+        """去重后的来源行政班ID（保持出现顺序）。"""
+        out: List[str] = []
+        for cid, _ in self.sources:
+            if cid not in out:
+                out.append(cid)
+        return out
+
+    @property
+    def size(self) -> int:
+        return sum(n for _, n in self.sources)
+
+
+@dataclass
+class WalkSlot:
+    """走班「独立时间」：一组教学班同时开课的时间段。
+
+    走班不挤进常规课的排法，而是每周若干次专门时段；每次连排 block 节。
+    """
+    id: str
+    times_per_week: int = 1
+    block: int = 2                                        # 连排节数，默认 2
+    classes: List[str] = field(default_factory=list)      # 参与走班的行政班
+
+
+@dataclass
 class Problem:
     classes: List[ClassInfo] = field(default_factory=list)
     teachers: Dict[str, TeacherInfo] = field(default_factory=dict)
@@ -191,6 +236,13 @@ class Problem:
     hint_assign: Dict[Tuple[str, str], str] = field(default_factory=dict)
     # 结构化额外约束（structured_requirements.json / requirements.txt 围栏块）
     structured: List[StructuredConstraint] = field(default_factory=list)
+    # 走班（2026-10-09）：两个都为空 = 走班功能关闭，行为与之前完全一致
+    walk_slots: List[WalkSlot] = field(default_factory=list)
+    teaching_classes: List[TeachingClass] = field(default_factory=list)
+
+    @property
+    def walk_enabled(self) -> bool:
+        return bool(self.walk_slots and self.teaching_classes)
 
     def teacher_name(self, tid: Optional[str]) -> str:
         if not tid:
@@ -316,6 +368,142 @@ def _load_teaching_assignments(ws):
             "class_id": cid,
             "subject": normalize_subject(_cell_str(r.get("学科") or r.get("科目"))),
         })
+    return out
+
+
+# ---------------------------------------------------------------- 走班（2026-10-09）
+def _split_ids(text: str) -> List[str]:
+    """把「C01,C02」「C01、C02」这类写法拆成 ID 列表。"""
+    if not text:
+        return []
+    parts = re.split(r"[,，、;；/\s]+", str(text).strip())
+    return [p for p in (x.strip() for x in parts) if p]
+
+
+def _load_walk_slots(ws, class_ids, warnings) -> List[WalkSlot]:
+    """读「走班时间」sheet（可选）。
+
+    列：独立时间ID | 周次数 | 连排节数 | 参与班级
+    """
+    if ws is None:
+        return []
+    out: List[WalkSlot] = []
+    seen = set()
+    for i, r in enumerate(_read_rows(ws), start=2):
+        sid = _cell_str(r.get("独立时间ID") or r.get("独立时间") or r.get("ID"))
+        if not sid:
+            continue
+        if sid in seen:
+            warnings.append(f"「走班时间」第 {i} 行：独立时间「{sid}」重复，已忽略该行。")
+            continue
+        seen.add(sid)
+        times = max(1, _cell_int(r.get("周次数") or r.get("每周次数"), 1))
+        block = max(1, _cell_int(r.get("连排节数"), 2))
+        members = _split_ids(_cell_str(r.get("参与班级") or r.get("班级")))
+        bad = [c for c in members if c not in class_ids]
+        if bad:
+            warnings.append("「走班时间」%s：参与班级 %s 在「班级」表里不存在，已忽略这些班。"
+                            % (sid, "、".join(bad)))
+            members = [c for c in members if c in class_ids]
+        out.append(WalkSlot(id=sid, times_per_week=times, block=block, classes=members))
+    return out
+
+
+def _load_teaching_classes(ws, class_ids, slot_ids, warnings) -> List[TeachingClass]:
+    """读「走班教学班」sheet（可选）。
+
+    列：教学班ID | 独立时间 | 学科 | 来源班级 | 人数 | 教室 | 任课教师
+    —— 一个教学班占多行，**一行一个来源**（第一行给出独立时间/学科/教室/教师）。
+
+    逐条独立校验：坏的那一条只丢它自己，并说明原因（绝不静默）。
+    """
+    if ws is None:
+        return []
+    order: List[str] = []
+    acc: Dict[str, TeachingClass] = {}
+    last_tcid = ""
+    for i, r in enumerate(_read_rows(ws), start=2):
+        raw_id = _cell_str(r.get("教学班ID") or r.get("教学班") or r.get("ID"))
+        src_cid = _cell_str(r.get("来源班级") or r.get("班级"))
+        # ⚠️ 「教学班ID」留空 = 延续上一行的教学班（教务几乎一定会用合并单元格，
+        #    openpyxl 读出来只有首行有值）。**不能直接 continue** —— 那会把整行来源丢掉，
+        #    表现是「教学班只剩第一个来源班」（2026-10-09 发现并修复）。
+        tcid = raw_id
+        if not tcid:
+            if last_tcid and src_cid:
+                tcid = last_tcid
+            else:
+                if src_cid:
+                    warnings.append(
+                        f"「走班教学班」第 {i} 行：没写「教学班ID」，认不出它属于哪个教学班，"
+                        f"已忽略该行的来源「{src_cid}」。")
+                continue
+        last_tcid = tcid
+        if tcid not in acc:
+            acc[tcid] = TeachingClass(
+                id=tcid,
+                subject=normalize_subject(_cell_str(r.get("学科"))),
+                slot=_cell_str(r.get("独立时间") or r.get("独立时间ID")),
+                classroom=_cell_str(r.get("教室")),
+                teacher_id=_cell_str(r.get("任课教师") or r.get("教师")),
+            )
+            order.append(tcid)
+        if src_cid:
+            acc[tcid].sources.append((src_cid, _cell_int(r.get("人数"), 0)))
+
+    out: List[TeachingClass] = []
+    for tcid in order:
+        tc = acc[tcid]
+        # 逐条校验，坏条只丢自己
+        if not tc.subject:
+            warnings.append(f"走班教学班「{tcid}」没有写「学科」，已忽略该教学班。")
+            continue
+        if tc.slot and tc.slot not in slot_ids:
+            warnings.append(f"走班教学班「{tcid}」的独立时间「{tc.slot}」"
+                            f"在「走班时间」表里不存在，已忽略该教学班。")
+            continue
+        good: List[Tuple[str, int]] = []
+        bad_cls: List[str] = []
+        for cid, n in tc.sources:
+            if cid in class_ids:
+                good.append((cid, n))
+            elif cid not in bad_cls:
+                bad_cls.append(cid)
+        if bad_cls:
+            warnings.append(f"走班教学班「{tcid}」的来源班级 {('、'.join(bad_cls))} "
+                            f"在「班级」表里不存在，已忽略这些来源。")
+        if not good:
+            warnings.append(f"走班教学班「{tcid}」没有任何有效来源，已忽略该教学班。")
+            continue
+        tc.sources = good
+        out.append(tc)
+
+    # 组内冲突检查：同一独立时间里，教师/教室都不能重复
+    by_slot: Dict[str, List[TeachingClass]] = {}
+    for tc in out:
+        if tc.slot:
+            by_slot.setdefault(tc.slot, []).append(tc)
+    for sid, group in by_slot.items():
+        seen_t: Dict[str, str] = {}
+        seen_r: Dict[str, str] = {}
+        for tc in group:
+            if tc.teacher_id:
+                if tc.teacher_id in seen_t:
+                    warnings.append(
+                        f"独立时间「{sid}」里「{tc.id}」与「{seen_t[tc.teacher_id]}」"
+                        f"是同一位任课教师，同一时段必然冲突，请调整。")
+                else:
+                    seen_t[tc.teacher_id] = tc.id
+            if tc.classroom:
+                if tc.classroom in seen_r:
+                    warnings.append(
+                        f"独立时间「{sid}」里「{tc.id}」与「{seen_r[tc.classroom]}」"
+                        f"用了同一间教室「{tc.classroom}」，请确认。")
+                else:
+                    seen_r[tc.classroom] = tc.id
+    for sid in slot_ids:
+        if sid not in by_slot:
+            warnings.append(f"独立时间「{sid}」下没有任何教学班，该时段不会排走班课。")
     return out
 
 
@@ -1050,6 +1238,19 @@ def load_problem(in_dir):
     standards = _load_period_standards(period_ws)
     assignments = _load_teaching_assignments(
         _find_sheet(wb, ["任课安排", "任课", "teaching_assignments"]))
+
+    # 走班（2026-10-09）：两张 sheet 都是可选的。
+    # 都没有 = 走班功能整体关闭，行为与之前完全一致。
+    cls_ids = [ci.id for ci in classes]
+    walk_slots = _load_walk_slots(
+        _find_sheet(wb, ["走班时间", "独立时间", "walk_slots"]), cls_ids, warnings_list)
+    teaching_classes = _load_teaching_classes(
+        _find_sheet(wb, ["走班教学班", "教学班", "teaching_classes"]),
+        cls_ids, [s.id for s in walk_slots], warnings_list)
+    if walk_slots or teaching_classes:
+        warnings_list.append(
+            f"走班已启用：{len(walk_slots)} 个独立时间、{len(teaching_classes)} 个教学班"
+            f"（走班时段的常规课会自动让位）。")
     if not standards:
         raise DataError("「课时标准」sheet 为空，无法排课")
 
@@ -1158,14 +1359,70 @@ def load_problem(in_dir):
 
     p = Problem(classes=classes, teachers=teachers, courses=courses,
                 requirements=requirements, config=cfg, warnings=warnings_list,
-                hint_assign=hint_assign, structured=structured_reqs)
+                hint_assign=hint_assign, structured=structured_reqs,
+                walk_slots=walk_slots, teaching_classes=teaching_classes)
     _post_process(p)
     return p
+
+
+def _walk_cells_of(p, cid: str) -> int:
+    """该班每周被走班占用的格数（参与多个独立时间则相加）。
+
+    ⚠️ 自习补位必须扣掉它 —— 走班格已被"走班"占住、不能再排常规课；
+    不扣的话参与班的常规课时会超过可用格数，直接判无解（2026-10-09 走班样本实测）。
+    """
+    slots = {s.id: s for s in p.walk_slots}
+    total, seen = 0, set()
+    for tc in p.teaching_classes:
+        if cid not in tc.source_classes or tc.slot in seen:
+            continue
+        seen.add(tc.slot)
+        s = slots.get(tc.slot)
+        if s:
+            total += max(1, int(s.times_per_week)) * max(1, int(s.block))
+    return total
+
+
+def _apply_walk(p):
+    """走班：把走班科目的课程标成 is_walk，并做一次课时核对。
+
+    走班科目的课时由「独立时间」承载（同组教学班同时开课），所以这些课不再
+    生成常规 x 变量；否则同一天会既排常规课、又排走班课，课时重复计数。
+    """
+    if not p.walk_enabled:
+        return
+    per_class: Dict[str, set] = {}
+    for tc in p.teaching_classes:
+        for cid in tc.source_classes:
+            per_class.setdefault(cid, set()).add(tc.subject)
+
+    marked = 0
+    for c in p.courses:
+        if c.subject in per_class.get(c.class_id, set()):
+            c.is_walk = True
+            marked += 1
+
+    # 课时核对：走班提供的课时 vs 课时标准里的周课时（不一致只告警，不阻断）
+    slot_len = {s.id: s.times_per_week * s.block for s in p.walk_slots}
+    for cid, subjs in sorted(per_class.items()):
+        for subj in sorted(subjs):
+            need = next((c.weekly for c in p.courses
+                         if c.class_id == cid and c.subject == subj), 0)
+            got = max([slot_len.get(tc.slot, 0) for tc in p.teaching_classes
+                       if tc.subject == subj and cid in tc.source_classes] or [0])
+            if need and got and need != got:
+                p.warnings.append(
+                    f"走班课时核对：{cid} 的「{subj}」标准是每周 {need} 节，"
+                    f"走班只提供了 {got} 节，请确认。")
+    if marked:
+        p.warnings.append(
+            f"走班：{marked} 条走班科目的课程改由走班时段承载，常规课表不再重复排。")
 
 
 def _post_process(p):
     cfg = p.config
     grid = cfg.grid_size()
+    _apply_walk(p)
 
     if cfg.consecutive.only_core_subjects:
         core = set(cfg.consecutive.subjects)
@@ -1179,8 +1436,10 @@ def _post_process(p):
             has_ss = any(c.subject == "自习" and c.class_id == ci.id for c in p.courses)
             if has_ss:
                 continue
-            used = sum(c.weekly for c in p.courses if c.class_id == ci.id)
-            rest = grid - used
+            # 走班课（is_walk）不由常规课表承载、走班格也已被占住，两者都要扣掉
+            used = sum(c.weekly for c in p.courses
+                       if c.class_id == ci.id and not getattr(c, "is_walk", False))
+            rest = grid - used - _walk_cells_of(p, ci.id)
             if rest > 0:
                 p.courses.append(CourseReq(
                     class_id=ci.id, subject="自习", teacher_id=None,

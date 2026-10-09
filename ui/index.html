@@ -25,8 +25,9 @@
               <li><strong>教师</strong>：教师ID、教师姓名、任教学科、职务（只需填语数英、物化生政史地等参与排课的教师，体育/艺术无需填写）</li>
               <li><strong>班级</strong>：班级ID、班级名称、年级、班主任、选科（如物化生、政史地）</li>
               <li><strong>课时标准</strong>：学科、选考周课时、非选考周课时、连堂节数、连堂日</li>
+              <li><strong>走班时间</strong> + <strong>走班教学班</strong>（<strong>只有搞走班的学校才需要</strong>）：哪些班参与走班、每个教学班由哪些班的学生组成。<strong>不需要走班请把这两张表整个删掉</strong>，留着示例数据可能被当成真的。</li>
             </ul>
-            <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并由排课引擎在排课的同时决定各班各科的任课教师。如需特殊指定（如某某老师教某个班），可在下方「特殊要求」中输入。体育活动为每天附加一节，不参与排课。</p>
+            <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并由排课引擎在排课的同时决定各班各科的任课教师。如需特殊指定（如某某老师教某个班），可在下方「特殊要求」中输入。体育活动为每天附加一节，不参与排课。<br>走班是可选功能：模板里附了「走班时间」「走班教学班」两张表，学校要搞走班就照格式填，不搞就删掉——删掉后程序行为与以前完全一致。</p>
           </div>
         </details>
         <button id="btn-download-template" class="ghost-btn">下载输入模板</button>
@@ -343,18 +344,30 @@
       return { text: out, hit };
     }
 
-    $('btn-gen-prompt').onclick = () => {
+    $('btn-gen-prompt').onclick = async () => {
       const note = $('ai-note');
       const raw = $('requirements').value.trim();
       if (!raw) {
         note.textContent = '请先在上面的输入框里写下要求（一行一条）。';
         return;
       }
-      const tMap = specSamples.teacherMap || {};
-      const cMap = specSamples.classMap || {};
+      let tMap = specSamples.teacherMap || {};
+      let cMap = specSamples.classMap || {};
       if (!Object.keys(tMap).length && !Object.keys(cMap).length) {
-        note.textContent = '还没拿到你表里的教师/班级清单 —— 请先在「① 上传数据文件」里选好输入文件。';
-        return;
+        // 名册来自预检结果，而启动时不再自动预检（见 refreshConfig），
+        // 所以这里按需补一次 —— 没有名册就做不了脱敏。
+        if (!inputPath) {
+          note.textContent = '还没拿到你表里的教师/班级清单 —— 请先在「① 上传数据文件」里选好输入文件。';
+          return;
+        }
+        note.textContent = '正在读取你表里的教师/班级名册…';
+        await validateSelectedFile(inputPath, true);
+        tMap = specSamples.teacherMap || {};
+        cMap = specSamples.classMap || {};
+        if (!Object.keys(tMap).length && !Object.keys(cMap).length) {
+          note.textContent = '没能从输入文件里读出名册，请确认文件可用后重试。';
+          return;
+        }
       }
       const d = desensitize(raw);
       const fmt = m => Object.entries(m).map(([n, id]) => id + '\t' + n).join('\n');
@@ -403,12 +416,9 @@
         outputDir = currentConfig.default_output_dir;
         $('dir-name').textContent = outputDir;
       }
-      if (currentConfig.last_input_file) {
-        inputPath = currentConfig.last_input_file;
-        $('file-name').textContent = inputPath;
-        showFileSize(inputPath);
-        validateSelectedFile(inputPath);
-      }
+      // ⚠️ 不再恢复「上次使用的输入文件」（2026-10-09 用户拍板，改动前请先确认）。
+      // 每次打开都要自己重新选，选完**立刻预检**（见 btn-pick-file）。
+      // 外壳侧也已去掉写入 —— 程序不再记录这个路径。
       renderHardLimitsSummary(currentConfig.hard_limits);
     }
 
@@ -663,6 +673,12 @@
       }
       const btn = $('btn-run');
       btn.disabled = true;
+      // 启动时不再自动预检（2026-10-09，见 refreshConfig），改在这里补一次：
+      // 「把数据问题挡在几分钟的排课之前」这个初衷不变，只是时机从"打开程序"
+      // 挪到"真要排课"。同一个文件只查一次，显式选过文件的不会重复查。
+      if (inputPath !== lastValidatedPath) {
+        await validateSelectedFile(inputPath, true);
+      }
       setBusy(true);
       $('btn-run-text').textContent = '排课中...';
       $('btn-spinner').classList.remove('hidden');

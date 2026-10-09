@@ -8,7 +8,7 @@ import math
 from typing import Dict, List, Tuple
 
 from ..config import NUM_DAYS, SELF_STUDY
-from .load import Problem, DataError, NO_TEACHER_SUBJECTS
+from .load import Problem, DataError, NO_TEACHER_SUBJECTS, _walk_cells_of
 
 
 def validate(p: Problem) -> List[str]:
@@ -17,16 +17,22 @@ def validate(p: Problem) -> List[str]:
     grid = cfg.grid_size()
 
     # 1) 每班周课时总额不得超过可用格数
+    # ⚠️ 走班课（is_walk）由走班格承载：既不计入常规课时，对应走班格也要从可用格数
+    #    里扣掉。不扣会误判「课时超过可用格数」直接拒绝排课（2026-10-09 实测）。
     for ci in p.classes:
-        total = sum(c.weekly for c in p.courses if c.class_id == ci.id)
-        if total > grid:
+        total = sum(c.weekly for c in p.courses
+                    if c.class_id == ci.id and not getattr(c, "is_walk", False))
+        walk_cells = _walk_cells_of(p, ci.id)
+        avail = grid - walk_cells
+        extra = f"（已扣除走班占用 {walk_cells} 格，" if walk_cells else "（"
+        if total > avail:
             raise DataError(
-                f"班级 {ci.id} 周课时合计 {total} 超过可用格数 {grid}"
-                f"（{cfg.schedule.periods_per_day} 节 × {NUM_DAYS} 天），请减少课时"
+                f"班级 {ci.id} 周课时合计 {total} 超过可用格数 {avail}"
+                f"{extra}{cfg.schedule.periods_per_day} 节 × {NUM_DAYS} 天），请减少课时"
             )
-        if total < grid:
+        if total < avail:
             warnings.append(
-                f"班级 {ci.id} 周课时 {total} 少于 {grid}，剩余 {grid - total} 节将作为自习"
+                f"班级 {ci.id} 周课时 {total} 少于 {avail}，剩余 {avail - total} 节将作为自习"
             )
 
     # 2) 候选教师是否登记 + 空候选是否致命
@@ -55,7 +61,8 @@ def validate(p: Problem) -> List[str]:
     # 2b) 容量可行性：某学科总课时超出候选教师总承载则必然无解
     demand_by_subject: Dict[str, int] = {}
     for c in p.courses:
-        if c.subject in NO_TEACHER_SUBJECTS:
+        # 走班课的教师由教学班表指定（不进 y/z），不计入常规供需核算
+        if c.subject in NO_TEACHER_SUBJECTS or getattr(c, "is_walk", False):
             continue
         demand_by_subject[c.subject] = demand_by_subject.get(c.subject, 0) + c.weekly
     for subj, need in demand_by_subject.items():
