@@ -13,18 +13,19 @@
 
   <main>
     <!-- 输入文件要求说明
-         默认折叠：格式说明看一次就够，折叠后首屏留给「① 上传数据文件」，
+         默认折叠：格式说明看一次就够，折叠后首屏留给「① 选要排课的 Excel 文件」，
          需要时点开，模板下载按钮留在外面（不能藏进折叠区，否则不好找）。 -->
     <section class="card info-card">
       <div class="info-head">
         <details class="info-fold">
           <summary>输入文件要求<span class="fold-hint">（点开看格式说明）</span></summary>
           <div class="info-content">
-            <p>请上传包含以下三个 sheet 的 <strong>.xlsx</strong> 文件：</p>
+            <p>请上传一个 <strong>.xlsx</strong> 文件，里面要有下面这几张表（<strong>前三张必填</strong>）：</p>
             <ul>
-              <li><strong>教师</strong>：教师ID、教师姓名、任教学科、职务（只需填语数英、物化生政史地等参与排课的教师，体育/艺术无需填写）</li>
-              <li><strong>班级</strong>：班级ID、班级名称、年级、班主任、选科（如物化生、政史地）</li>
-              <li><strong>课时标准</strong>：学科、选考周课时、非选考周课时、连堂节数、连堂日</li>
+              <li><strong>教师</strong>（必填）：教师ID、教师姓名、任教学科、职务（只需填语数英、物化生政史地等参与排课的教师，体育/艺术无需填写）</li>
+              <li><strong>班级</strong>（必填）：班级ID、班级名称、年级、班主任、选科（如物化生、政史地）</li>
+              <li><strong>课时标准</strong>（必填）：学科、选考周课时、非选考周课时、连堂节数、连堂日</li>
+              <li><strong>任课安排</strong>（可选）：想预先指定谁教哪个班就填；<strong>不填也可以</strong>，程序会自己分配教师</li>
               <li><strong>走班时间</strong> + <strong>走班教学班</strong>（<strong>只有搞走班的学校才需要</strong>）：哪些班参与走班、每个教学班由哪些班的学生组成。<strong>不需要走班请把这两张表整个删掉</strong>，留着示例数据可能被当成真的。</li>
             </ul>
             <p class="info-note">系统根据班级选科 + 课时标准自动生成每门课的周课时，并由排课引擎在排课的同时决定各班各科的任课教师。如需特殊指定（如某某老师教某个班），可在下方「特殊要求」中输入。体育活动为每天附加一节，不参与排课。<br>走班是可选功能：模板里附了「走班时间」「走班教学班」两张表，学校要搞走班就照格式填，不搞就删掉——删掉后程序行为与以前完全一致。</p>
@@ -35,7 +36,7 @@
     </section>
 
     <section class="card">
-      <div class="step">① 上传数据文件（Excel）</div>
+      <div class="step">① 选要排课的 Excel 文件</div>
       <div class="row">
         <button id="btn-pick-file" class="primary-btn">选择文件</button>
         <span id="file-name" class="path-text">未选择文件</span>
@@ -63,11 +64,11 @@
                 不要自己补成 <code>T030</code>（补零的写法也能认，但以表里为准最稳）</li>
           </ul>
 
-          <p class="spec-title">写法二：其它要求用「结构化写法」（推荐）</p>
+          <p class="spec-title">写法二：其它要求，让 AI 转成下面这种格式（推荐）</p>
           <p class="spec-alert">⚠️ 直接写中文句子（如「张老师周二没空」「T48不想周五上课」）
-             <b>不会生效</b> —— 引擎只认「教师指定」和下面这种 JSON 两种写法。
+             <b>不会生效</b> —— 程序只认「教师指定」和下面这种 JSON 两种写法。
              不方便手写 JSON 时，用下面「不会写？用 AI 帮你转」那段：软件会生成一份
-             <b>已脱敏</b>的提示词，复制给任意 AI，把返回的 JSON 粘回来即可。</p>
+             <b>姓名已经换成编号</b>的一段话，复制给任意 AI，把返回的 JSON 粘回来即可。</p>
           <p>下面这种 JSON 可以直接整段粘进上面的输入框（<b>连开头结尾的
              <code>```json</code> / <code>```</code> 一起粘</b>），能精确表达 5 类要求：
              老师某天或某节没空、老师不想某天上连堂、某班某天或某节不排课（该格排自习）、
@@ -87,7 +88,7 @@
             <li><code>days</code> 用 1~5 表示周一到周五；<code>periods</code> 省略＝全天，
                 节次 1~8（上午 1~5、下午 6~8）</li>
             <li>不想手写 JSON？用下面「不会写？用 AI 帮你转」——它会生成一段
-                <b>已脱敏</b>（姓名自动换成编号）的提示词，复制给任意 AI 即可</li>
+                <b>姓名自动换成编号</b>的提示词，复制给任意 AI 即可</li>
             <li>写错的那条会被单独跳过并说明原因，不影响其它条目</li>
           </ul>
 
@@ -110,7 +111,7 @@
            刻意把提示词**明文展示在文本框里**、让用户自己选中复制：
            便于查看和调试，也不碰剪贴板 API（Tauri webview 里可能被拒）。 -->
       <details class="ai-help">
-        <summary>不会写？用 AI 帮你转成结构化写法</summary>
+        <summary>不会写？让 AI 帮你转成程序认识的格式</summary>
         <div class="ai-body">
           <p>三步：</p>
           <ol>
@@ -121,7 +122,7 @@
                 再点「开始排课」。</li>
           </ol>
           <div class="ai-actions">
-            <button id="btn-gen-prompt" class="primary-btn">生成提示词</button>
+            <button id="btn-gen-prompt" class="primary-btn">生成提示词（给 AI 看）</button>
             <button id="btn-sel-prompt" class="ghost-btn" disabled>全选</button>
           </div>
           <textarea id="ai-prompt" readonly placeholder="点「生成提示词」后，这里会显示可复制的内容。（需要先在 ① 里选好输入文件）"></textarea>
@@ -131,7 +132,7 @@
     </section>
 
     <section class="card">
-      <div class="step">③ 输出目录</div>
+      <div class="step">③ 排好的课表存到哪</div>
       <div class="row">
         <button id="btn-pick-dir" class="primary-btn">选择目录</button>
         <span id="dir-name" class="path-text">未选择目录</span>
@@ -357,7 +358,7 @@
         // 名册来自预检结果，而启动时不再自动预检（见 refreshConfig），
         // 所以这里按需补一次 —— 没有名册就做不了脱敏。
         if (!inputPath) {
-          note.textContent = '还没拿到你表里的教师/班级清单 —— 请先在「① 上传数据文件」里选好输入文件。';
+          note.textContent = '还没拿到你表里的教师/班级清单 —— 请先在「① 选要排课的 Excel 文件」里选好输入文件。';
           return;
         }
         note.textContent = '正在读取你表里的教师/班级名册…';
@@ -488,9 +489,6 @@
       } else {
         html += '<div class="validate-error">输入文件有问题，请先修正再排课</div>';
       }
-      if (st.format) {
-        html += '<div class="validate-subjects">格式：' + st.format + '</div>';
-      }
       if (parts.length) {
         html += '<div class="validate-stats">' +
           parts.map(p => '<span>' + p + '</span>').join('') + '</div>';
@@ -584,7 +582,7 @@
         const planCard = document.createElement('div');
         planCard.className = 'result-card';
         let html = '<div class="result-card-title">排课方案</div>';
-        html += '<div class="result-card-sub">共生成 ' + r.plans.length + ' 套方案，点击卡片展开详情</div>';
+        html += '<div class="result-card-sub">共生成 ' + r.plans.length + ' 套方案 · 评分满分 100，越高越均衡 · 点卡片展开各项明细</div>';
         html += '<div class="plan-list">';
         r.plans.forEach(p => {
           // 把 note 拆分成指标标签
@@ -592,7 +590,7 @@
           let metricsHtml = '';
           metrics.forEach(m => {
             // 提取数值和标签
-            const match = m.match(/(.+?)\s*([\d.]+%?)/);
+            const match = m.match(/(.+?)\s*([\d.]+(?:\s*(?:%|节|分|个|位|门))?)/);
             if (match) {
               metricsHtml += `<span class="metric-tag"><span class="metric-label">${match[1]}</span><span class="metric-value">${match[2]}</span></span>`;
             } else {
@@ -686,7 +684,7 @@
       cancelBtn.disabled = false;
       cancelBtn.textContent = '取消排课';
       cancelBtn.classList.remove('hidden');
-      setStatus('running', '正在排课，请稍候…（25 个班约需 3 分钟）');
+      setStatus('running', '正在排课，请稍候…（一般约 3 分钟，班级越多越久）');
       showProgress();
       startProgressPolling();
       $('result-area').classList.add('hidden');
@@ -779,7 +777,7 @@
       {
         icon: '👋',
         title: '欢迎使用排课助手',
-        desc: '我是你的排课小帮手！上传教师、班级和课时标准数据，告诉我你的特殊要求，我就能排出多套可对比的课表供你挑选（25 个班大约 3 分钟）。数据都只在你自己的电脑上处理，不会上传。'
+        desc: '我是你的排课小帮手！上传教师、班级和课时标准数据，告诉我你的特殊要求，我就能排出多套可对比的课表供你挑选（一般约 3 分钟，班级越多越久）。数据都只在你自己的电脑上处理，不会上传。'
       },
       {
         icon: '📊',

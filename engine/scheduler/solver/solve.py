@@ -167,18 +167,23 @@ def _describe(metrics: Dict[str, float], sub: Dict[str, float]) -> str:
 
     此前用「相对排名」生成亮点，方案指标相同时会全部输出一样的亮点；
     改用绝对子分后，亮点反映该方案真实的长板。
+
+    ⚠️ 2026-10-10 改文案（用户反馈：指标名是内部叫法、老师看不懂）：
+       原来是「首节主科 62.5%，自习下午 88.0%，教师极差 3节，下午主科 21.0%，
+               ★ 自习后置 88、首节主科 62」 —— ★ 那两项与前面本就是同几个指标，重复了。
+       现在只保留 4 项原始指标、一律说大白话，去掉重复的 ★ 行。
+       （`sub` 参数保留是为了不动调用方；若以后要加"亮点"，请注意下面这条限制。）
+
+    ⚠️ 硬约束：**每一段只放一个数字**。前端按「，」切成标签、每段只取第一个数字，
+       一段里写两个数字会被丢掉（★ 那行原来就只显示出第一个）。
+       另外标签里不要出现阿拉伯数字（如"第 1 节"会先把 1 当成数值取走）——用"第一节"。
     """
-    parts = [
-        f"首节主科 {metrics['first_core_rate']:.1f}%",
-        f"自习下午 {metrics['selfstudy_pm_rate']:.1f}%",
-        f"教师极差 {metrics['teacher_max_span']:.0f}节",
-        f"下午主科 {metrics['pm_core_rate']:.1f}%",
-    ]
-    tops = sorted(((v, k) for k, v in sub.items() if v is not None),
-                  reverse=True)[:2]
-    if tops:
-        parts.append("★ " + "、".join(f"{k} {v:.0f}" for v, k in tops))
-    return "，".join(parts)
+    return "，".join([
+        f"第一节是主科 {metrics['first_core_rate']:.1f}%",
+        f"自习排在下午 {metrics['selfstudy_pm_rate']:.1f}%",
+        f"下午排主科 {metrics['pm_core_rate']:.1f}%",
+        f"最忙和最闲的老师日课时差 {metrics['teacher_max_span']:.0f} 节",
+    ])
 
 
 def solve_plans(bundle: ModelBundle, log=None) -> Tuple[List[Plan], List[str], str]:
