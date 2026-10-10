@@ -1241,16 +1241,28 @@ def load_problem(in_dir):
 
     # 走班（2026-10-09）：两张 sheet 都是可选的。
     # 都没有 = 走班功能整体关闭，行为与之前完全一致。
+    # ⚠️ 启用判据是「两张表都有内容」（见 Problem.walk_enabled）→ 这里的提示必须用同一口径，
+    #    否则只填一张时会打印"已启用"、实际却什么都没发生（2026-10-10 修）。
     cls_ids = [ci.id for ci in classes]
-    walk_slots = _load_walk_slots(
-        _find_sheet(wb, ["走班时间", "独立时间", "walk_slots"]), cls_ids, warnings_list)
+    _walk_ws = _find_sheet(wb, ["走班时间", "独立时间", "walk_slots"])
+    _tc_ws = _find_sheet(wb, ["走班教学班", "教学班", "teaching_classes"])
+    walk_slots = _load_walk_slots(_walk_ws, cls_ids, warnings_list)
     teaching_classes = _load_teaching_classes(
-        _find_sheet(wb, ["走班教学班", "教学班", "teaching_classes"]),
-        cls_ids, [s.id for s in walk_slots], warnings_list)
-    if walk_slots or teaching_classes:
+        _tc_ws, cls_ids, [s.id for s in walk_slots], warnings_list)
+    if walk_slots and teaching_classes:
         warnings_list.append(
             f"走班已启用：{len(walk_slots)} 个独立时间、{len(teaching_classes)} 个教学班"
             f"（走班时段的常规课会自动让位）。")
+    elif _walk_ws is not None or _tc_ws is not None:
+        # ⚠️ 这里用「表存不存在」判断，不能只用 walk_slots/teaching_classes 是否为空：
+        #    只填「走班教学班」时，它的独立时间指向不存在的「走班时间」→ 条目被逐条丢掉，
+        #    两个列表都空，那样就什么都不会提示（2026-10-10 实测踩到）。
+        lack = [n for n, ws in (("「走班时间」", _walk_ws), ("「走班教学班」", _tc_ws)) if ws is None]
+        why = ("这两张表还缺：" + "、".join(lack)) if lack else \
+              "两张表都在，但内容没被认出来（原因见下面那几条提示）"
+        warnings_list.append(
+            f"走班没有生效：{why}。走班要两张表都有内容才会启用；"
+            f"学校不搞走班的话，请把这两张表整张删掉。")
     if not standards:
         raise DataError("「课时标准」sheet 为空，无法排课")
 
