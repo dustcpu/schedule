@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- 排课助手图标 · 方案B 四宫格（设计源文件）
+       改完这里必须重新生成 src-tauri/icons/icon.ico，且 256x256 要排在 ico 的第一个条目
+       （Tauri 只读 entries()[0] 当窗口图标；小尺寸须存标准 BMP，只有 256 可用 PNG）。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <rect x="39.68" y="39.68" width="80.9" height="80.9" rx="19.46" fill="#ffffff"/>
+  <rect x="135.42" y="39.68" width="80.9" height="80.9" rx="19.46" fill="#ffffff"/>
+  <rect x="39.68" y="135.42" width="80.9" height="80.9" rx="19.46" fill="#ffffff"/>
+  <rect x="135.42" y="135.42" width="80.9" height="80.9" rx="19.46"
+        fill="none" stroke="#ffffff" stroke-width="13.25"/>
+</svg>
